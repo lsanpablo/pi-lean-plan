@@ -19,13 +19,13 @@ does not require a separate Ralph-loop or DeepSeek planning extension.
 From GitHub:
 
 ```sh
-pi install git:github.com/lsanpablo/pi-laguna-plan-runner@v0.1.0
+pi install git:github.com/lsanpablo/pi-laguna-plan-runner@v0.1.1
 ```
 
 To install only for the current project:
 
 ```sh
-pi install -l git:github.com/lsanpablo/pi-laguna-plan-runner@v0.1.0
+pi install -l git:github.com/lsanpablo/pi-laguna-plan-runner@v0.1.1
 ```
 
 To try a local checkout:

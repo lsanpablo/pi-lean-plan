@@ -1,6 +1,6 @@
 {
   "name": "pi-laguna-plan-runner",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A low-context, one-task-per-process plan runner for Pi and Poolside Laguna models.",
   "type": "module",
   "license": "MIT",
@@ -37,6 +37,14 @@
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   },
   "pi": {
     "extensions": [
