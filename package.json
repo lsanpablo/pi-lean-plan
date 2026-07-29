@@ -1,0 +1,49 @@
+{
+  "name": "pi-laguna-plan-runner",
+  "version": "0.1.0",
+  "description": "A low-context, one-task-per-process plan runner for Pi and Poolside Laguna models.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Luis San Pablo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lsanpablo/pi-laguna-plan-runner.git"
+  },
+  "homepage": "https://github.com/lsanpablo/pi-laguna-plan-runner#readme",
+  "bugs": {
+    "url": "https://github.com/lsanpablo/pi-laguna-plan-runner/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "poolside",
+    "laguna",
+    "ralph-loop",
+    "planning"
+  ],
+  "files": [
+    "extensions",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "check": "npm test && npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.js"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  }
+}
