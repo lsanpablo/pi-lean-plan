@@ -1,4 +1,0 @@
-interface:
-  display_name: "Plan for Ralph"
-  short_description: "Create sequential plans for the Laguna runner"
-  default_prompt: "Use $plan-for-ralph to inspect this project and produce an approved sequential implementation plan."

@@ -2,29 +2,26 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
-  PLAN_FILE,
-  PLAN_STATE_FILE,
-  RUN_STATE_FILE,
-  markTaskComplete,
   normalizePlan,
-  readChecklist,
+  renderFinalVerificationScript,
+  renderPlanCheckScript,
   renderPlanMarkdown,
-  setPlanStatus,
+  renderRalphMarkdown,
   slugify,
 } from "../extensions/core.js";
-import { executePlan, runPiWorker } from "../extensions/runner.js";
 
 function samplePlan() {
   return normalizePlan(
     {
       title: "Add guarded widget sync",
-      summary: "Add one small behavior and cover it with focused tests.",
+      objective: "Implement guarded synchronization and verify the complete behavior.",
       tasks: [
         {
           title: "Add the sync helper",
-          instructions: "Implement the helper and its unit tests.",
+          instructions: "Implement the helper and focused tests.",
           files: ["src/sync.js", "tests/sync.test.js"],
           verification: "node --test tests/sync.test.js",
         },
@@ -41,9 +38,10 @@ function samplePlan() {
   );
 }
 
-test("normalizes ids and dependencies for a weak planner", () => {
+test("normalizes sequential tasks for a low-context planner", () => {
   const plan = samplePlan();
   assert.equal(plan.slug, "add-guarded-widget-sync");
+  assert.equal(plan.maxIterations, 10);
   assert.deepEqual(
     plan.tasks.map(({ id, dependsOn }) => ({ id, dependsOn })),
     [
@@ -54,175 +52,111 @@ test("normalizes ids and dependencies for a weak planner", () => {
   assert.equal(slugify(" À risky / title! "), "a-risky-title");
 });
 
-test("renders and updates only controller-owned checkboxes", () => {
-  const plan = samplePlan();
-  let markdown = renderPlanMarkdown(plan);
-  assert.deepEqual([...readChecklist(markdown, plan)], []);
-  markdown = setPlanStatus(markdown, "running");
-  markdown = markTaskComplete(markdown, "T001", "focused test passed");
-  assert.deepEqual([...readChecklist(markdown, plan)], ["T001"]);
-  assert.match(markdown, /- Evidence: focused test passed/);
-  assert.match(markdown, /- Status: running/);
+test("rejects publish commands disguised as verification", () => {
+  assert.throws(
+    () =>
+      normalizePlan({
+        title: "Unsafe plan",
+        objective: "Do not let acceptance commands publish.",
+        tasks: [
+          {
+            title: "Publish",
+            instructions: "Publish the package.",
+            verification: "npm publish",
+          },
+        ],
+        final_verification: "true",
+      }),
+    /may not contain npm publish/,
+  );
 });
 
-test("runs one fresh worker per task and checks boxes after controller verification", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "laguna-runner-"));
-  const planDir = path.join(root, ".pi", "plans", "test");
-  await fs.mkdir(planDir, { recursive: true });
+test("renders an explicit checkbox plan", () => {
+  const markdown = renderPlanMarkdown(samplePlan());
+  assert.match(markdown, /- \[ \] \*\*T001 — Add the sync helper\*\*/);
+  assert.match(markdown, /- \[ \] \*\*T002 — Wire the helper\*\*/);
+  assert.match(markdown, /Verification evidence: _pending_/);
+  assert.match(markdown, /node --test tests\/sync\.test\.js/);
+});
+
+test("renders native pi-ralph-loop v2 configuration", () => {
+  const markdown = renderRalphMarkdown(
+    samplePlan(),
+    ".pi/lean-plans/add-guarded-widget-sync",
+  );
+  assert.match(markdown, /^---\ncommands:/);
+  assert.match(markdown, /name: plan-status[\s\S]*acceptance: true/);
+  assert.match(markdown, /name: final-verification[\s\S]*acceptance: true/);
+  assert.match(markdown, /items_per_iteration: 1/);
+  assert.match(markdown, /completion_promise: 'LEAN_PLAN_COMPLETE'/);
+  assert.match(markdown, /completion_gate: required/);
+  assert.match(markdown, /stop_on_error: false/);
+  assert.match(markdown, /policy:secret-bearing-paths/);
+  assert.doesNotMatch(markdown, /spawn|child process|custom loop/i);
+});
+
+test("check-plan gate fails until tasks are checked in order", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "lean-plan-check-"));
   const plan = samplePlan();
-  await fs.writeFile(path.join(planDir, PLAN_STATE_FILE), `${JSON.stringify(plan)}\n`);
-  await fs.writeFile(path.join(planDir, PLAN_FILE), renderPlanMarkdown(plan));
+  const planPath = path.join(root, "PLAN.md");
+  const scriptPath = path.join(root, "check-plan.sh");
+  await fs.writeFile(planPath, renderPlanMarkdown(plan));
+  await fs.writeFile(scriptPath, renderPlanCheckScript(plan), { mode: 0o755 });
 
-  const workerCalls = [];
-  const verificationCalls = [];
-  const result = await executePlan({
-    projectCwd: root,
-    planDir,
-    modelSelector: "poolside/laguna-m",
-    runWorker: async ({ task }) => {
-      workerCalls.push(task.id);
-      return { code: 0 };
-    },
-    runVerification: async ({ command }) => {
-      verificationCalls.push(command);
-      return { code: 0 };
-    },
-  });
+  let result = spawnSync(scriptPath, [], { encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /0\/2 tasks checked/);
 
-  assert.equal(result.status, "complete");
-  assert.deepEqual(workerCalls, ["T001", "T002"]);
-  assert.deepEqual(verificationCalls, [
-    "node --test tests/sync.test.js",
-    "node --test",
-    "npm test",
-  ]);
-  const markdown = await fs.readFile(path.join(planDir, PLAN_FILE), "utf8");
-  assert.deepEqual([...readChecklist(markdown, plan)], ["T001", "T002"]);
-  assert.match(markdown, /- Status: complete/);
-  const runState = JSON.parse(await fs.readFile(path.join(planDir, RUN_STATE_FILE), "utf8"));
-  assert.equal(runState.status, "complete");
+  let markdown = await fs.readFile(planPath, "utf8");
+  markdown = markdown.replace(
+    "- [ ] **T002 — Wire the helper**",
+    "- [x] **T002 — Wire the helper**",
+  );
+  await fs.writeFile(planPath, markdown);
+  result = spawnSync(scriptPath, [], { encoding: "utf8" });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /checked out of order/);
+
+  markdown = markdown.replace(
+    "- [ ] **T001 — Add the sync helper**",
+    "- [x] **T001 — Add the sync helper**",
+  );
+  await fs.writeFile(planPath, markdown);
+  result = spawnSync(scriptPath, [], { encoding: "utf8" });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /2\/2 tasks checked/);
   await fs.rm(root, { recursive: true, force: true });
 });
 
-test("retries a failed verification with a fresh worker", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "laguna-retry-"));
-  const planDir = path.join(root, ".pi", "plans", "test");
-  await fs.mkdir(planDir, { recursive: true });
+test("final verification wrapper runs from the project root", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "lean-final-check-"));
+  const taskDirectory = path.join(root, ".pi", "lean-plans", "test");
+  await fs.mkdir(taskDirectory, { recursive: true });
   const plan = normalizePlan({
-    title: "Retry one task",
-    summary: "Exercise retry behavior.",
+    title: "Check root",
+    objective: "Prove the final command starts in the project root.",
     tasks: [
       {
-        title: "Implement",
-        instructions: "Implement the requested behavior.",
-        verification: "npm test",
-      },
-    ],
-    final_verification: "npm test",
-  });
-  await fs.writeFile(path.join(planDir, PLAN_STATE_FILE), `${JSON.stringify(plan)}\n`);
-  await fs.writeFile(path.join(planDir, PLAN_FILE), renderPlanMarkdown(plan));
-
-  let workers = 0;
-  let verifications = 0;
-  const result = await executePlan({
-    projectCwd: root,
-    planDir,
-    runWorker: async () => {
-      workers += 1;
-      return { code: 0 };
-    },
-    runVerification: async () => {
-      verifications += 1;
-      return { code: verifications === 1 ? 1 : 0 };
-    },
-  });
-
-  assert.equal(result.status, "complete");
-  assert.equal(workers, 2);
-  assert.equal(verifications, 3);
-  await fs.rm(root, { recursive: true, force: true });
-});
-
-test("restores PLAN.md when a worker tampers with it", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "laguna-protect-"));
-  const planDir = path.join(root, ".pi", "plans", "test");
-  await fs.mkdir(planDir, { recursive: true });
-  const plan = normalizePlan({
-    title: "Protect state",
-    summary: "Keep workers away from controller state.",
-    tasks: [
-      {
-        title: "Try worker",
-        instructions: "Make the implementation change.",
+        title: "Make change",
+        instructions: "Make the requested change.",
         verification: "true",
       },
     ],
-    final_verification: "true",
+    final_verification:
+      "printf \"%s\" \"it's fine\" > final-quote.txt && pwd > final-pwd.txt",
   });
-  await fs.writeFile(path.join(planDir, PLAN_STATE_FILE), `${JSON.stringify(plan)}\n`);
-  await fs.writeFile(path.join(planDir, PLAN_FILE), renderPlanMarkdown(plan));
+  const scriptPath = path.join(taskDirectory, "run-final-verification.sh");
+  await fs.writeFile(scriptPath, renderFinalVerificationScript(plan), { mode: 0o755 });
 
-  await executePlan({
-    projectCwd: root,
-    planDir,
-    runWorker: async () => {
-      const changed = markTaskComplete(
-        await fs.readFile(path.join(planDir, PLAN_FILE), "utf8"),
-        "T001",
-        "worker claimed success",
-      );
-      await fs.writeFile(path.join(planDir, PLAN_FILE), changed);
-      return { code: 0 };
-    },
-    runVerification: async () => ({ code: 0 }),
-  });
-
-  const markdown = await fs.readFile(path.join(planDir, PLAN_FILE), "utf8");
-  assert.doesNotMatch(markdown, /worker claimed success/);
-  assert.match(markdown, /controller ran `true` successfully/);
-  await fs.rm(root, { recursive: true, force: true });
-});
-
-test("spawns a Pi-compatible child with isolated context and the selected model", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "laguna-child-"));
-  const mockPi = path.join(root, "mock-pi.mjs");
-  const logPath = path.join(root, "child.jsonl");
-  await fs.writeFile(
-    mockPi,
-    `#!/usr/bin/env node
-let input = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => { input += chunk; });
-process.stdin.on("end", () => {
-  process.stdout.write(JSON.stringify({ args: process.argv.slice(2), input }) + "\\n");
-});
-`,
+  const result = spawnSync(scriptPath, [], { encoding: "utf8" });
+  assert.equal(result.status, 0);
+  assert.equal(
+    (await fs.readFile(path.join(root, "final-pwd.txt"), "utf8")).trim(),
+    root,
   );
-  await fs.chmod(mockPi, 0o755);
-  const plan = samplePlan();
-  const result = await runPiWorker({
-    plan,
-    task: plan.tasks[0],
-    projectCwd: root,
-    logPath,
-    modelSelector: "poolside/laguna-m",
-    thinkingLevel: "medium",
-    piExecutable: mockPi,
-  });
-
-  assert.equal(result.code, 0);
-  const record = JSON.parse((await fs.readFile(logPath, "utf8")).trim());
-  assert.deepEqual(record.args.slice(0, 6), [
-    "--mode",
-    "json",
-    "--print",
-    "--no-session",
-    "--no-extensions",
-    "--no-skills",
-  ]);
-  assert.ok(record.args.includes("poolside/laguna-m"));
-  assert.match(record.input, /Complete exactly one task/);
-  assert.match(record.input, /Never edit anything under \.pi\/plans\//);
+  assert.equal(
+    await fs.readFile(path.join(root, "final-quote.txt"), "utf8"),
+    "it's fine",
+  );
   await fs.rm(root, { recursive: true, force: true });
 });

@@ -1,109 +1,104 @@
-# Pi Laguna Plan Runner
+# Pi Lean Plan
 
-A Pi package for weaker or low-context coding models, especially Poolside Laguna M.
-It turns an approved read-only plan into a deterministic, sequential execution loop:
+A thin, deterministic planning adapter for
+[`@lnilluv/pi-ralph-loop`](https://github.com/lnilluv/pi-ralph-loop).
 
-- Pi explores the project without write tools.
-- A structured tool presents the plan for explicit approval.
-- The extension writes `PLAN.md`, `RALPH.md`, `OPEN_QUESTIONS.md`, and hidden state.
-- `/laguna-run` starts one fresh Pi process for one task.
-- The TypeScript-free controller, not a model, chooses the next task and runs verification.
-- Only the controller checks a task off, and only after its command exits successfully.
-- A failed task gets one fresh retry; then the loop stops with logs.
+Lean Plan does not implement a loop. It gives Pi a read-only planning mode and a
+structured finalization tool, then writes a native Ralph task package:
 
-The generated `RALPH.md` is the worker contract adapted for this runner. The package
-does not require a separate Ralph-loop or DeepSeek planning extension.
+- `PLAN.md` — approved sequential tasks with checkboxes
+- `RALPH.md` — pi-ralph-loop v2 configuration and iteration prompt
+- `OPEN_QUESTIONS.md` — completion-gate blocker state
+- `check-plan.sh` — acceptance check for task order and completion
+- `run-final-verification.sh` — acceptance check run from the project root
+
+`/lean-run` is only a convenience handoff to `/ralph --path`. Ralph remains
+responsible for fresh child contexts, iterations, command evidence, completion
+gating, status, logs, resume, stop, and cancel.
 
 ## Install
 
-From GitHub:
+Install the Ralph extension first:
 
 ```sh
-pi install git:github.com/lsanpablo/pi-laguna-plan-runner@v0.1.1
+pi install npm:@lnilluv/pi-ralph-loop@2.0.0
 ```
 
-To install only for the current project:
+Version 2.0.0 of pi-ralph-loop declares Node.js 22.22.1 or newer. Check with
+`node --version` if npm reports an engine warning.
+
+Then install Lean Plan:
 
 ```sh
-pi install -l git:github.com/lsanpablo/pi-laguna-plan-runner@v0.1.1
+pi install git:github.com/lsanpablo/pi-lean-plan@v1.0.0
 ```
 
-To try a local checkout:
-
-```sh
-pi install /absolute/path/to/pi-laguna-plan-runner
-```
-
-Restart Pi after installation, or run `/reload` in an existing session.
+For a project-local installation, add `-l` to either command. Restart Pi or run
+`/reload` after installation.
 
 Pi packages execute code with your user permissions. Review
 [`extensions/index.js`](extensions/index.js) and
-[`extensions/runner.js`](extensions/runner.js) before installation.
+[`extensions/core.js`](extensions/core.js) before installation.
 
 ## Use
 
-Start planning:
+Create an approved plan:
 
 ```text
-/laguna-plan Add retry handling to the import job, including tests
+/lean-plan Add retry handling to the import job, including tests
 ```
 
-The model inspects the project read-only. It can ask questions in the conversation.
-When ready, it submits a structured plan. Pi shows the task list and every command
-that will later execute. Approve it to write the plan files; reject it to revise.
+The planning model can inspect with read-only tools and ask questions in the
+conversation. It submits structured tasks, task verification commands, and one
+final verification command. Pi shows them for approval before writing anything.
 
-The final response gives a path such as:
+After approval, start the newest plan:
 
 ```text
-.pi/plans/add-retry-handling
+/lean-run
 ```
 
-Start that plan:
+Or name the generated task folder:
 
 ```text
-/laguna-run .pi/plans/add-retry-handling
+/lean-run .pi/lean-plans/add-retry-handling
 ```
 
-With no path, `/laguna-run` selects the most recently generated plan. Stop an active
-child with:
+That dispatches the native Pi command:
 
 ```text
-/laguna-stop
+/ralph --path ".pi/lean-plans/add-retry-handling"
 ```
 
-The runner uses the parent Pi session's current provider, model ID, and thinking
-level for every child. API keys, custom provider configuration, deployment URL,
-and TLS environment variables are inherited from the parent process. It does not
-copy keys into plan files or logs.
-
-## Files and recovery
-
-Each plan lives under `.pi/plans/<slug>/`:
+Use pi-ralph-loop's own commands to operate the run:
 
 ```text
-PLAN.md
-RALPH.md
-OPEN_QUESTIONS.md
-.laguna-plan.json
-.laguna-run.json
-logs/
+/ralph-status .pi/lean-plans/add-retry-handling
+/ralph-stop .pi/lean-plans/add-retry-handling
+/ralph-cancel .pi/lean-plans/add-retry-handling
+/ralph-resume .pi/lean-plans/add-retry-handling
 ```
 
-`PLAN.md` is the human-readable source of progress. `.laguna-plan.json` preserves
-the approved task inputs, while `.laguna-run.json` records attempts and controller
-events. Re-run `/laguna-run <path>` after fixing an external blocker; checked tasks
-are skipped. If a task already consumed both attempts, revise the plan or reset its
-attempt counter intentionally before resuming.
+## Deterministic completion
 
-Workers are told not to edit plan state. The controller also snapshots `PLAN.md`
-before each worker and restores it if the worker changes it.
+The generated `RALPH.md` uses pi-ralph-loop v2's native controls:
+
+- `items_per_iteration: 1`
+- `stop_on_error: false`, so incomplete checks provide evidence for the next pass
+- a required `LEAN_PLAN_COMPLETE` completion promise
+- required `PLAN.md` and `OPEN_QUESTIONS.md` outputs
+- acceptance checks for all task checkboxes and the approved final command
+- guardrails that protect secret-bearing paths and generated control files
+
+The loop may emit its promise only after all tasks are checked. Ralph then reruns
+both acceptance commands; a remaining task, failed final command, missing output,
+or unresolved P0/P1 question rejects completion and continues the loop.
 
 ## Commands
 
-- `/laguna-plan <request>` — enter read-only planning and send the request
-- `/laguna-plan-exit` — leave planning without writing a plan
-- `/laguna-run [plan path]` — execute an approved plan
-- `/laguna-stop` — stop the current child
+- `/lean-plan <request>` — enter read-only planning
+- `/lean-plan-exit` — leave planning without creating files
+- `/lean-run [task folder]` — hand an approved plan to pi-ralph-loop
 
 ## Development
 
@@ -112,5 +107,5 @@ npm test
 npm run check
 ```
 
-Tests use fake workers and fake verification functions. They do not call an AI API
-or modify a real project.
+Tests exercise plan rendering and the generated acceptance scripts. They do not
+start Pi, call an AI API, or run a Ralph loop.

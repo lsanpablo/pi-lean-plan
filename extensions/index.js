@@ -1,28 +1,31 @@
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 import { Type } from "typebox";
 import {
+  FINAL_CHECK_FILE,
+  PLAN_CHECK_FILE,
   PLAN_FILE,
   PLAN_STATE_FILE,
   QUESTIONS_FILE,
   RALPH_FILE,
-  formatModelSelector,
+  assertPathInside,
   normalizePlan,
   renderApprovalPreview,
+  renderFinalVerificationScript,
   renderOpenQuestionsMarkdown,
+  renderPlanCheckScript,
   renderPlanMarkdown,
   renderRalphMarkdown,
 } from "./core.js";
-import { executePlan, loadPlanDirectory } from "./runner.js";
 
-const PLAN_TOOLS = ["read", "grep", "find", "ls", "laguna_finalize_plan"];
+const PLAN_TOOLS = ["read", "grep", "find", "ls", "lean_finalize_plan"];
 
-async function writeExclusive(filePath, content) {
-  await fs.writeFile(filePath, content, { encoding: "utf8", flag: "wx" });
+async function writeExclusive(filePath, content, mode = 0o644) {
+  await fs.writeFile(filePath, content, { encoding: "utf8", flag: "wx", mode });
 }
 
 async function createUniquePlanDirectory(cwd, slug) {
-  const root = path.join(cwd, ".pi", "plans");
+  const root = path.join(cwd, ".pi", "lean-plans");
   await fs.mkdir(root, { recursive: true });
   for (let suffix = 1; suffix <= 100; suffix += 1) {
     const name = suffix === 1 ? slug : `${slug}-${suffix}`;
@@ -37,38 +40,84 @@ async function createUniquePlanDirectory(cwd, slug) {
   throw new Error(`Could not allocate a unique plan directory for ${slug}`);
 }
 
-function relativeDisplayPath(cwd, target) {
+function displayPath(cwd, target) {
   const relative = path.relative(cwd, target);
   return relative === "" ? "." : relative;
 }
 
-export default function lagunaPlanRunner(pi) {
+function hasRalphExtension(pi) {
+  return pi
+    .getCommands()
+    .some((command) => command.name === "ralph" && command.source === "extension");
+}
+
+async function resolvePlanDirectory(cwd, requestedPath) {
+  const root = path.join(cwd, ".pi", "lean-plans");
+  let candidate;
+
+  if (requestedPath.trim()) {
+    const requested = path.resolve(cwd, requestedPath.trim());
+    candidate = path.basename(requested) === RALPH_FILE ? path.dirname(requested) : requested;
+  } else {
+    let entries;
+    try {
+      entries = await fs.readdir(root, { withFileTypes: true });
+    } catch {
+      throw new Error("No Lean plans found. Start with /lean-plan <request>.");
+    }
+    const plans = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const directory = path.join(root, entry.name);
+      const ralphPath = path.join(directory, RALPH_FILE);
+      try {
+        const stat = await fs.stat(ralphPath);
+        plans.push({ directory, modified: stat.mtimeMs });
+      } catch {
+        // Ignore incomplete directories.
+      }
+    }
+    plans.sort((a, b) => b.modified - a.modified);
+    if (plans.length === 0) {
+      throw new Error("No Lean plans found. Start with /lean-plan <request>.");
+    }
+    candidate = plans[0].directory;
+  }
+
+  assertPathInside(cwd, candidate);
+  await fs.access(path.join(candidate, RALPH_FILE), fsConstants.R_OK);
+  await fs.access(path.join(candidate, PLAN_FILE), fsConstants.R_OK);
+  return candidate;
+}
+
+export default function leanPlanExtension(pi) {
   let planning = false;
   let planFinalized = false;
   let savedTools = null;
-  let activeRun = null;
 
   const restoreTools = (ctx) => {
     if (savedTools) pi.setActiveTools(savedTools);
     savedTools = null;
     planning = false;
     planFinalized = false;
-    if (ctx.hasUI) ctx.ui.setStatus("laguna-plan", undefined);
+    if (ctx.hasUI) ctx.ui.setStatus("lean-plan", undefined);
   };
 
   pi.registerTool({
-    name: "laguna_finalize_plan",
-    label: "Finalize Laguna plan",
+    name: "lean_finalize_plan",
+    label: "Finalize Lean plan",
     description:
-      "Present a sequential implementation plan for approval, then write PLAN.md, RALPH.md, and OPEN_QUESTIONS.md. This never starts implementation.",
+      "Present a sequential plan for approval and write a native pi-ralph-loop task package. This never runs a loop itself.",
     parameters: Type.Object({
-      title: Type.String({ description: "Short implementation plan title" }),
-      summary: Type.String({ description: "Scope, approach, and important constraints" }),
+      title: Type.String({ description: "Short plan title" }),
+      objective: Type.String({
+        description: "Concrete outcome, scope, constraints, and important behavior",
+      }),
       tasks: Type.Array(
         Type.Object({
-          title: Type.String({ description: "Small, outcome-oriented task title" }),
+          title: Type.String({ description: "Small outcome-oriented task title" }),
           instructions: Type.String({
-            description: "Complete instructions usable by a fresh worker with no chat history",
+            description: "Standalone instructions for a fresh Ralph iteration",
           }),
           files: Type.Optional(
             Type.Array(Type.String(), {
@@ -76,26 +125,26 @@ export default function lagunaPlanRunner(pi) {
             }),
           ),
           verification: Type.String({
-            description: "One non-interactive shell command that proves this task succeeded",
+            description: "Non-interactive shell command proving this task succeeded",
           }),
         }),
-        { minItems: 1, maxItems: 30 },
+        { minItems: 1, maxItems: 12 },
       ),
       final_verification: Type.String({
-        description: "One non-interactive shell command that verifies the entire plan",
+        description: "Non-interactive command used as Ralph acceptance evidence",
       }),
     }),
     async execute(_toolCallId, input, _signal, _onUpdate, ctx) {
       if (!planning || planFinalized) {
-        throw new Error("Start a new planning session with /laguna-plan first.");
+        throw new Error("Start a new planning session with /lean-plan first.");
       }
       if (!ctx.hasUI) {
-        throw new Error("Plan finalization requires Pi's interactive UI for explicit approval.");
+        throw new Error("Plan finalization requires Pi's interactive UI for approval.");
       }
 
       const plan = normalizePlan(input);
       const approved = await ctx.ui.confirm(
-        `Approve ${plan.tasks.length}-task plan?`,
+        `Approve ${plan.tasks.length}-task Lean plan?`,
         renderApprovalPreview(plan),
       );
       if (!approved) {
@@ -103,185 +152,121 @@ export default function lagunaPlanRunner(pi) {
           content: [
             {
               type: "text",
-              text: "Plan was not approved. Ask what should change, revise it, and call this tool again.",
+              text: "Plan not approved. Ask what should change, revise it, and submit again.",
             },
           ],
           details: { approved: false },
         };
       }
 
-      const planDir = await createUniquePlanDirectory(ctx.cwd, plan.slug);
+      const planDirectory = await createUniquePlanDirectory(ctx.cwd, plan.slug);
+      const relativeDirectory = displayPath(ctx.cwd, planDirectory).replaceAll(path.sep, "/");
       try {
         await writeExclusive(
-          path.join(planDir, PLAN_STATE_FILE),
+          path.join(planDirectory, PLAN_STATE_FILE),
           `${JSON.stringify(plan, null, 2)}\n`,
         );
-        await writeExclusive(path.join(planDir, PLAN_FILE), renderPlanMarkdown(plan));
-        await writeExclusive(path.join(planDir, RALPH_FILE), renderRalphMarkdown(plan));
+        await writeExclusive(path.join(planDirectory, PLAN_FILE), renderPlanMarkdown(plan));
         await writeExclusive(
-          path.join(planDir, QUESTIONS_FILE),
-          renderOpenQuestionsMarkdown(plan),
+          path.join(planDirectory, QUESTIONS_FILE),
+          renderOpenQuestionsMarkdown(),
+        );
+        await writeExclusive(
+          path.join(planDirectory, PLAN_CHECK_FILE),
+          renderPlanCheckScript(plan),
+          0o755,
+        );
+        await writeExclusive(
+          path.join(planDirectory, FINAL_CHECK_FILE),
+          renderFinalVerificationScript(plan),
+          0o755,
+        );
+        await writeExclusive(
+          path.join(planDirectory, RALPH_FILE),
+          renderRalphMarkdown(plan, relativeDirectory),
         );
       } catch (error) {
-        await fs.rm(planDir, { recursive: true, force: true });
+        await fs.rm(planDirectory, { recursive: true, force: true });
         throw error;
       }
 
       planFinalized = true;
-      const displayPath = relativeDisplayPath(ctx.cwd, planDir);
-      if (ctx.hasUI) {
-        ctx.ui.setStatus("laguna-plan", ctx.ui.theme.fg("success", "plan approved"));
-      }
+      const ralphReady = hasRalphExtension(pi);
       return {
         content: [
           {
             type: "text",
-            text: `Approved plan written to ${displayPath}. Do not implement it in this turn. Tell the user to run /laguna-run ${displayPath}.`,
+            text: ralphReady
+              ? `Approved native Ralph task written to ${relativeDirectory}. Do not implement it in this turn. Tell the user to run /lean-run ${relativeDirectory}.`
+              : `Approved native Ralph task written to ${relativeDirectory}. @lnilluv/pi-ralph-loop is not loaded. Tell the user to install it, reload Pi, then run /lean-run ${relativeDirectory}.`,
           },
         ],
         details: {
           approved: true,
-          planDirectory: displayPath,
-          tasks: plan.tasks.length,
+          planDirectory: relativeDirectory,
+          ralphExtensionLoaded: ralphReady,
         },
       };
     },
   });
 
-  pi.registerCommand("laguna-plan", {
-    description: "Explore read-only and create an approved sequential plan",
+  pi.registerCommand("lean-plan", {
+    description: "Explore read-only and create an approved pi-ralph-loop plan",
     handler: async (args, ctx) => {
-      if (activeRun) {
-        ctx.ui.notify("Stop the active runner before starting a new plan.", "warning");
-        return;
-      }
       if (planning) {
-        ctx.ui.notify("Laguna planning mode is already active.", "info");
+        ctx.ui.notify("Lean planning mode is already active.", "info");
         return;
       }
       savedTools = pi.getActiveTools();
       planning = true;
       planFinalized = false;
       pi.setActiveTools(PLAN_TOOLS);
-      ctx.ui.setStatus("laguna-plan", ctx.ui.theme.fg("warning", "read-only planning"));
-      ctx.ui.notify("Read-only planning enabled. Finalization requires your approval.", "info");
-      if (args.trim()) {
-        pi.sendUserMessage(args.trim());
-      }
+      ctx.ui.setStatus("lean-plan", ctx.ui.theme.fg("warning", "read-only planning"));
+      ctx.ui.notify(
+        "Read-only planning enabled. The approved output will be handed to pi-ralph-loop.",
+        "info",
+      );
+      if (args.trim()) pi.sendUserMessage(args.trim());
     },
   });
 
-  pi.registerCommand("laguna-plan-exit", {
-    description: "Leave Laguna planning mode without writing a plan",
+  pi.registerCommand("lean-plan-exit", {
+    description: "Leave Lean planning mode without writing a plan",
     handler: async (_args, ctx) => {
       if (!planning) {
-        ctx.ui.notify("Laguna planning mode is not active.", "info");
+        ctx.ui.notify("Lean planning mode is not active.", "info");
         return;
       }
       restoreTools(ctx);
-      ctx.ui.notify("Laguna planning mode disabled.", "info");
+      ctx.ui.notify("Lean planning mode disabled.", "info");
     },
   });
 
-  pi.registerCommand("laguna-run", {
-    description: "Run the latest or specified approved plan one task at a time",
+  pi.registerCommand("lean-run", {
+    description: "Start an approved Lean plan through pi-ralph-loop",
     handler: async (args, ctx) => {
       if (planning) {
-        ctx.ui.notify("Finish or exit planning mode before starting the runner.", "warning");
+        ctx.ui.notify("Finish or exit planning mode first.", "warning");
         return;
       }
-      if (activeRun) {
-        ctx.ui.notify("A Laguna plan is already running.", "warning");
+      if (!hasRalphExtension(pi)) {
+        ctx.ui.notify(
+          "pi-ralph-loop is not loaded. Install npm:@lnilluv/pi-ralph-loop@2.0.0, then /reload.",
+          "error",
+        );
         return;
       }
 
-      let planDir;
+      let planDirectory;
       try {
-        planDir = await loadPlanDirectory(ctx.cwd, args);
+        planDirectory = await resolvePlanDirectory(ctx.cwd, args);
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
         return;
       }
 
-      const confirmed = await ctx.ui.confirm(
-        "Start Laguna runner?",
-        `Plan: ${relativeDisplayPath(ctx.cwd, planDir)}
-
-The controller will start a fresh Pi process for each task, allow at most two
-attempts per task, execute every approved verification command, and update
-checkboxes only after verification succeeds.`,
-      );
-      if (!confirmed) return;
-
-      const abortController = new AbortController();
-      const runToken = { abortController, planDir };
-      activeRun = runToken;
-      const modelSelector = formatModelSelector(ctx.model);
-      const thinkingLevel = pi.getThinkingLevel();
-      ctx.ui.setStatus("laguna-run", ctx.ui.theme.fg("accent", "starting"));
-
-      void (async () => {
-        try {
-          const result = await executePlan({
-            projectCwd: ctx.cwd,
-            planDir,
-            modelSelector,
-            thinkingLevel,
-            signal: abortController.signal,
-            onEvent(event) {
-              if (event.type === "task-attempt-started") {
-                ctx.ui.setStatus(
-                  "laguna-run",
-                  ctx.ui.theme.fg(
-                    "accent",
-                    `${event.task.id} attempt ${event.attempt}`,
-                  ),
-                );
-              } else if (event.type === "task-completed") {
-                ctx.ui.notify(`${event.task.id} verified and checked off.`, "success");
-              } else if (event.type === "final-verification-started") {
-                ctx.ui.setStatus(
-                  "laguna-run",
-                  ctx.ui.theme.fg("accent", "final verification"),
-                );
-              }
-            },
-          });
-
-          const displayPath = relativeDisplayPath(ctx.cwd, result.planDir);
-          if (result.status === "complete") {
-            ctx.ui.notify(
-              `LAGUNA_PLAN_COMPLETE\n${result.completed} tasks verified.\n${displayPath}/${PLAN_FILE}`,
-              "success",
-            );
-          } else {
-            ctx.ui.notify(
-              `${result.status}: ${result.reason}\nSee ${displayPath}/logs`,
-              result.status === "aborted" ? "warning" : "error",
-            );
-          }
-        } catch (error) {
-          ctx.ui.notify(
-            `Laguna runner error: ${error instanceof Error ? error.message : String(error)}`,
-            "error",
-          );
-        } finally {
-          if (activeRun === runToken) activeRun = null;
-          ctx.ui.setStatus("laguna-run", undefined);
-        }
-      })();
-    },
-  });
-
-  pi.registerCommand("laguna-stop", {
-    description: "Stop the active Laguna child process after its current signal",
-    handler: async (_args, ctx) => {
-      if (!activeRun) {
-        ctx.ui.notify("No Laguna plan is running.", "info");
-        return;
-      }
-      activeRun.abortController.abort();
-      ctx.ui.notify("Stopping the active Laguna worker…", "warning");
+      const relativeDirectory = displayPath(ctx.cwd, planDirectory).replaceAll(path.sep, "/");
+      pi.sendUserMessage(`/ralph --path ${JSON.stringify(relativeDirectory)}`);
     },
   });
 
@@ -289,23 +274,24 @@ checkboxes only after verification succeeds.`,
     if (!planning) return;
     return {
       message: {
-        customType: "laguna-plan-context",
+        customType: "lean-plan-context",
         display: false,
-        content: `[LAGUNA READ-ONLY PLANNING MODE]
+        content: `[LEAN READ-ONLY PLANNING MODE]
 
 Explore the local project with read, grep, find, and ls. Do not implement or edit.
-Build a short sequential plan suitable for a weaker implementation model.
+Create a short sequential plan for @lnilluv/pi-ralph-loop.
 
 Each task must:
-- fit one fresh worker process with no access to this chat;
-- include all necessary context and likely files;
-- have one concrete, non-interactive verification command;
-- avoid depending on implicit memory from earlier tasks.
+- fit one fresh Ralph iteration with no chat history;
+- contain standalone instructions and likely files;
+- have one objective, non-interactive verification command;
+- depend only on earlier checked tasks;
+- avoid unresolved product or architecture choices.
 
-Ask the user directly about unresolved product or architecture decisions. When the
-plan has no blocking questions, call laguna_finalize_plan exactly once. The tool
-assigns task IDs and dependencies, displays the plan for explicit approval, and
-writes the artifacts. After calling it, do not implement anything.`,
+Ask the user directly about decisions that change scope or architecture. Prefer
+3–8 tasks. When no blocking questions remain, call lean_finalize_plan exactly
+once. Its structured output becomes PLAN.md and a native RALPH.md with acceptance
+commands and a required completion gate. After finalizing, do not implement.`,
       },
     };
   });
@@ -315,10 +301,10 @@ writes the artifacts. After calling it, do not implement anything.`,
     if (!PLAN_TOOLS.includes(event.toolName)) {
       return {
         block: true,
-        reason: `Laguna planning is read-only. ${event.toolName} is unavailable until planning ends.`,
+        reason: `Lean planning is read-only. ${event.toolName} is unavailable until planning ends.`,
       };
     }
-    if (planFinalized && event.toolName !== "laguna_finalize_plan") {
+    if (planFinalized && event.toolName !== "lean_finalize_plan") {
       return {
         block: true,
         reason: "The plan is finalized. End the response without further tool calls.",
@@ -326,12 +312,16 @@ writes the artifacts. After calling it, do not implement anything.`,
     }
   });
 
-  pi.on("agent_end", async (_event, ctx) => {
-    if (planning && planFinalized) restoreTools(ctx);
+  pi.on("context", async (event) => {
+    if (planning) return;
+    return {
+      messages: event.messages.filter(
+        (message) => message?.customType !== "lean-plan-context",
+      ),
+    };
   });
 
-  pi.on("session_shutdown", async () => {
-    activeRun?.abortController.abort();
-    activeRun = null;
+  pi.on("agent_end", async (_event, ctx) => {
+    if (planning && planFinalized) restoreTools(ctx);
   });
 }

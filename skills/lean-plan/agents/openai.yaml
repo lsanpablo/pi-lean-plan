@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lean Plan"
+  short_description: "Create approved task plans for pi-ralph-loop"
+  default_prompt: "Use $lean-plan to inspect this project read-only and create an approved plan for pi-ralph-loop."

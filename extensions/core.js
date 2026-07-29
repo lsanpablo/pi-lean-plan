@@ -1,18 +1,31 @@
 import path from "node:path";
 
-export const PLAN_STATE_FILE = ".laguna-plan.json";
-export const RUN_STATE_FILE = ".laguna-run.json";
 export const PLAN_FILE = "PLAN.md";
 export const RALPH_FILE = "RALPH.md";
 export const QUESTIONS_FILE = "OPEN_QUESTIONS.md";
-
-const TASK_ID_PATTERN = /^T\d{3}$/;
+export const PLAN_STATE_FILE = ".lean-plan.json";
+export const PLAN_CHECK_FILE = "check-plan.sh";
+export const FINAL_CHECK_FILE = "run-final-verification.sh";
 
 function requireText(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} must be a non-empty string`);
   }
   return value.trim();
+}
+
+function requireVerificationCommand(value, label) {
+  const command = requireText(value, label);
+  const blocked = [
+    { pattern: /\bgit\s+push\b/i, label: "git push" },
+    { pattern: /\bnpm\s+publish\b/i, label: "npm publish" },
+    { pattern: /\brm\s+-rf\s+\/(?:\s|$)/i, label: "rm -rf /" },
+  ];
+  const match = blocked.find(({ pattern }) => pattern.test(command));
+  if (match) {
+    throw new Error(`${label} may not contain ${match.label}`);
+  }
+  return command;
 }
 
 export function slugify(value) {
@@ -32,14 +45,14 @@ export function normalizePlan(input, now = new Date()) {
   }
 
   const title = requireText(input.title, "title");
-  const summary = requireText(input.summary, "summary");
+  const objective = requireText(input.objective, "objective");
   const finalVerification = requireText(
     input.final_verification ?? input.finalVerification,
     "final_verification",
   );
 
-  if (!Array.isArray(input.tasks) || input.tasks.length < 1 || input.tasks.length > 30) {
-    throw new Error("tasks must contain between 1 and 30 items");
+  if (!Array.isArray(input.tasks) || input.tasks.length < 1 || input.tasks.length > 12) {
+    throw new Error("tasks must contain between 1 and 12 items");
   }
 
   const tasks = input.tasks.map((task, index) => {
@@ -56,7 +69,7 @@ export function normalizePlan(input, now = new Date()) {
       title: requireText(task.title, `tasks[${index}].title`),
       instructions: requireText(task.instructions, `tasks[${index}].instructions`),
       files: files.map((file) => file.trim()).filter(Boolean),
-      verification: requireText(
+      verification: requireVerificationCommand(
         task.verification,
         `tasks[${index}].verification`,
       ),
@@ -68,102 +81,274 @@ export function normalizePlan(input, now = new Date()) {
     version: 1,
     title,
     slug: slugify(title),
-    summary,
+    objective,
     createdAt: now.toISOString(),
-    status: "ready",
-    finalVerification,
-    maxAttemptsPerTask: 2,
-    taskTimeoutSeconds: 900,
+    finalVerification: requireVerificationCommand(
+      finalVerification,
+      "final_verification",
+    ),
+    maxIterations: Math.min(50, Math.max(10, tasks.length * 3 + 2)),
+    timeoutSeconds: 900,
     tasks,
   };
 }
 
-function fencedShell(command) {
+export function validatePlan(plan) {
+  if (!plan || plan.version !== 1) throw new Error("Unsupported plan version");
+  requireText(plan.title, "plan.title");
+  requireText(plan.objective, "plan.objective");
+  requireText(plan.finalVerification, "plan.finalVerification");
+  if (!Array.isArray(plan.tasks) || plan.tasks.length < 1 || plan.tasks.length > 12) {
+    throw new Error("Plan must contain between 1 and 12 tasks");
+  }
+  for (const [index, task] of plan.tasks.entries()) {
+    const id = `T${String(index + 1).padStart(3, "0")}`;
+    const dependency = index === 0 ? null : `T${String(index).padStart(3, "0")}`;
+    if (task.id !== id) throw new Error(`Invalid task id at index ${index}`);
+    if ((task.dependsOn ?? null) !== dependency) {
+      throw new Error(`${id} has an invalid sequential dependency`);
+    }
+    requireText(task.title, `${id}.title`);
+    requireText(task.instructions, `${id}.instructions`);
+    requireText(task.verification, `${id}.verification`);
+  }
+  return plan;
+}
+
+function shellFence(command) {
   return `\`\`\`sh\n${command}\n\`\`\``;
 }
 
 export function renderPlanMarkdown(plan) {
-  validatePlanState(plan);
-  const taskSections = plan.tasks
+  validatePlan(plan);
+  const tasks = plan.tasks
     .map((task) => {
-      const files = task.files.length > 0 ? task.files.map((file) => `\`${file}\``).join(", ") : "Not preselected";
-      return `<!-- laguna-task:start:${task.id} -->
-## ${task.id} — ${task.title}
+      const files =
+        task.files.length > 0
+          ? task.files.map((file) => `\`${file}\``).join(", ")
+          : "Discover the relevant local files";
+      return `<!-- lean-task:start:${task.id} -->
+- [ ] **${task.id} — ${task.title}**
+  - Depends on: ${task.dependsOn ?? "none"}
+  - Likely files: ${files}
+  - Verification evidence: _pending_
 
-- [ ] Status
-- Depends on: ${task.dependsOn ?? "none"}
-- Files: ${files}
-- Verify:
+  ${task.instructions}
 
-${fencedShell(task.verification)}
+  Run before checking this task:
 
-### Instructions
-
-${task.instructions}
-<!-- laguna-task:end:${task.id} -->`;
+${shellFence(task.verification)}
+<!-- lean-task:end:${task.id} -->`;
     })
     .join("\n\n");
 
-  return `<!-- laguna-plan:v1 -->
+  return `<!-- lean-plan:v1 -->
 # ${plan.title}
 
-- Status: ready
+- Status: approved
 - Created: ${plan.createdAt}
-- Execution: sequential, one fresh Pi process per task
-- Checkboxes: controller-owned; workers must not edit this file
+- Execution: first unchecked task only; one task per Ralph iteration
 
-## Summary
+## Objective
 
-${plan.summary}
+${plan.objective}
+
+## Checklist contract
+
+1. Work only on the first unchecked task.
+2. Inspect the project before editing.
+3. Run that task's verification command after implementation.
+4. If verification fails, leave the task unchecked.
+5. If verification succeeds, change only its checkbox to \`[x]\` and replace
+   \`Verification evidence: _pending_\` with a concise result.
+6. Do not start a later task in the same iteration.
 
 ## Tasks
 
-${taskSections}
+${tasks}
 
 ## Final verification
 
-${fencedShell(plan.finalVerification)}
+${shellFence(plan.finalVerification)}
 `;
 }
 
-export function renderRalphMarkdown(plan) {
-  validatePlanState(plan);
+function yamlQuote(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+export function renderRalphMarkdown(plan, taskDirectory) {
+  validatePlan(plan);
+  const planPath = path.posix.join(taskDirectory.replaceAll("\\", "/"), PLAN_FILE);
+  const questionsPath = path.posix.join(
+    taskDirectory.replaceAll("\\", "/"),
+    QUESTIONS_FILE,
+  );
+
   return `---
-name: ${plan.slug}
-plan: PLAN.md
-max_iterations: ${Math.min(50, plan.tasks.length * plan.maxAttemptsPerTask + 1)}
+commands:
+  - name: plan-status
+    run: './${PLAN_CHECK_FILE}'
+    timeout: 20
+    acceptance: true
+  - name: final-verification
+    run: './${FINAL_CHECK_FILE}'
+    timeout: ${plan.timeoutSeconds}
+    acceptance: true
+max_iterations: ${plan.maxIterations}
+inter_iteration_delay: 0
 items_per_iteration: 1
-completion_promise: LAGUNA_PLAN_COMPLETE
+timeout: ${plan.timeoutSeconds}
+completion_promise: ${yamlQuote("LEAN_PLAN_COMPLETE")}
+completion_gate: required
+required_outputs:
+  - ${yamlQuote(PLAN_FILE)}
+  - ${yamlQuote(QUESTIONS_FILE)}
+stop_on_error: false
+guardrails:
+  block_commands:
+    - ${yamlQuote("git\\s+push")}
+    - ${yamlQuote("npm\\s+publish")}
+    - ${yamlQuote("rm\\s+-rf\\s+/(?:\\s|$)")}
+  protected_files:
+    - ${yamlQuote("policy:secret-bearing-paths")}
+    - ${yamlQuote(RALPH_FILE)}
+    - ${yamlQuote(PLAN_STATE_FILE)}
+    - ${yamlQuote(PLAN_CHECK_FILE)}
+    - ${yamlQuote(FINAL_CHECK_FILE)}
 ---
 
-# Worker contract
+# Execute the approved plan
 
-Read \`PLAN.md\` and work on only the first unchecked task.
+You are running inside \`@lnilluv/pi-ralph-loop\`. Each iteration has fresh
+context. The approved plan and its checkboxes are durable state.
 
-1. Inspect the local project before editing.
-2. Implement only that task and its necessary supporting changes.
-3. Run the task's verification command.
-4. Do not edit \`PLAN.md\`, \`RALPH.md\`, \`OPEN_QUESTIONS.md\`, or hidden state files in this directory.
-5. Stop after the one task. The deterministic controller owns retries, verification, and checkboxes.
+## Objective
 
-When every task is checked and the final verification succeeds, the controller records
-\`LAGUNA_PLAN_COMPLETE\`.
+${plan.objective}
+
+## Current evidence
+
+Checklist gate:
+
+{{ commands.plan-status }}
+
+Final verification:
+
+{{ commands.final-verification }}
+
+These command results were collected before this iteration. Ralph reruns both
+commands after the completion promise because they are acceptance commands.
+
+## Iteration procedure
+
+1. Read \`${planPath}\`.
+2. Select only the first unchecked task.
+3. Inspect the relevant project files and existing conventions.
+4. Implement that task completely.
+5. Run the task-specific verification command from \`PLAN.md\`.
+6. Check off the task and record evidence only if that command succeeds.
+7. Stop the iteration without beginning another task.
+
+If implementation exposes a blocking product or architecture decision, record it
+under a P0 or P1 heading in \`${questionsPath}\`, leave the task unchecked, and
+explain the blocker. Mark resolved questions as checked items or remove them.
+
+Do not edit \`${RALPH_FILE}\`, \`${PLAN_STATE_FILE}\`, \`${PLAN_CHECK_FILE}\`, or
+\`${FINAL_CHECK_FILE}\`. Do not push or publish.
+
+## Completion
+
+Emit <promise>LEAN_PLAN_COMPLETE</promise> only when:
+
+- every task in \`${planPath}\` is checked;
+- \`${questionsPath}\` has no unresolved P0/P1 items;
+- the final verification succeeds.
+
+The Ralph completion gate is authoritative. If any acceptance check fails after
+the promise, continue working on the first remaining failure.
 `;
 }
 
-export function renderOpenQuestionsMarkdown(plan) {
-  validatePlanState(plan);
+export function renderOpenQuestionsMarkdown() {
   return `# Open Questions
 
-None. This plan was explicitly approved before these files were written.
+No unresolved priority questions.
 
-If implementation discovers a decision that changes scope or architecture, stop the
-runner and return to planning instead of guessing.
+If a loop iteration discovers a blocker, add it as an unchecked item beneath a
+\`## P0\` or \`## P1\` heading. Check or remove it after resolution.
+`;
+}
+
+export function renderPlanCheckScript(plan) {
+  validatePlan(plan);
+  const expectedIds = plan.tasks.map((task) => task.id).join(" ");
+  return `#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+plan_file="$script_dir/${PLAN_FILE}"
+
+if [ ! -f "$plan_file" ]; then
+  echo "PLAN.md is missing" >&2
+  exit 2
+fi
+
+actual_ids=$(sed -n 's/^- \\[[ xX]\\] \\*\\*\\(T[0-9][0-9][0-9]\\) .*/\\1/p' "$plan_file" | paste -sd ' ' -)
+expected_ids=${shellQuote(expectedIds)}
+
+if [ "$actual_ids" != "$expected_ids" ]; then
+  echo "PLAN.md task structure changed unexpectedly" >&2
+  echo "expected: $expected_ids" >&2
+  echo "actual:   $actual_ids" >&2
+  exit 2
+fi
+
+if ! awk '
+  /^- \\[ \\] \\*\\*T[0-9][0-9][0-9] / { saw_unchecked = 1; next }
+  /^- \\[[xX]\\] \\*\\*T[0-9][0-9][0-9] / {
+    if (saw_unchecked) invalid = 1
+  }
+  END { exit invalid ? 1 : 0 }
+' "$plan_file"; then
+  echo "PLAN.md tasks were checked out of order" >&2
+  exit 2
+fi
+
+checked=$(awk '/^- \\[[xX]\\] \\*\\*T[0-9][0-9][0-9] / { count++ } END { print count + 0 }' "$plan_file")
+unchecked=$(awk '/^- \\[ \\] \\*\\*T[0-9][0-9][0-9] / { count++ } END { print count + 0 }' "$plan_file")
+total=$((checked + unchecked))
+
+echo "Lean plan: $checked/$total tasks checked"
+if [ "$unchecked" -gt 0 ]; then
+  echo "Remaining:"
+  awk '/^- \\[ \\] \\*\\*T[0-9][0-9][0-9] / { print "  " $0 }' "$plan_file"
+  exit 1
+fi
+
+echo "All plan tasks are checked."
+`;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
+}
+
+export function renderFinalVerificationScript(plan) {
+  validatePlan(plan);
+  return `#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+project_dir=$(CDPATH= cd -- "$script_dir/../../.." && pwd)
+cd "$project_dir"
+
+exec /bin/sh -lc ${shellQuote(plan.finalVerification)}
 `;
 }
 
 export function renderApprovalPreview(plan) {
-  validatePlanState(plan);
+  validatePlan(plan);
   const tasks = plan.tasks
     .map(
       (task) =>
@@ -172,92 +357,14 @@ export function renderApprovalPreview(plan) {
     .join("\n");
   return `${plan.title}
 
-${plan.summary}
+${plan.objective}
 
 ${tasks}
 
-Final verification: ${plan.finalVerification}
+Ralph final acceptance: ${plan.finalVerification}
+Maximum Ralph iterations: ${plan.maxIterations}
 
-Approve writing this plan? No implementation will start yet.`;
-}
-
-export function validatePlanState(plan) {
-  if (!plan || plan.version !== 1) {
-    throw new Error("Unsupported or missing plan version");
-  }
-  requireText(plan.title, "plan.title");
-  requireText(plan.summary, "plan.summary");
-  requireText(plan.finalVerification, "plan.finalVerification");
-  if (!Array.isArray(plan.tasks) || plan.tasks.length < 1) {
-    throw new Error("Plan has no tasks");
-  }
-  for (const [index, task] of plan.tasks.entries()) {
-    if (!TASK_ID_PATTERN.test(task.id) || task.id !== `T${String(index + 1).padStart(3, "0")}`) {
-      throw new Error(`Invalid sequential task id at index ${index}`);
-    }
-    requireText(task.title, `${task.id}.title`);
-    requireText(task.instructions, `${task.id}.instructions`);
-    requireText(task.verification, `${task.id}.verification`);
-    const expectedDependency = index === 0 ? null : `T${String(index).padStart(3, "0")}`;
-    if ((task.dependsOn ?? null) !== expectedDependency) {
-      throw new Error(`${task.id} has an invalid dependency`);
-    }
-  }
-  return plan;
-}
-
-export function readChecklist(markdown, plan) {
-  validatePlanState(plan);
-  const completed = new Set();
-  for (const task of plan.tasks) {
-    const blockPattern = new RegExp(
-      `<!-- laguna-task:start:${task.id} -->([\\s\\S]*?)<!-- laguna-task:end:${task.id} -->`,
-    );
-    const match = markdown.match(blockPattern);
-    if (!match) {
-      throw new Error(`PLAN.md is missing the ${task.id} task block`);
-    }
-    const statusMatch = match[1].match(/^- \[([ xX])\] Status$/m);
-    if (!statusMatch) {
-      throw new Error(`PLAN.md has no controller checkbox for ${task.id}`);
-    }
-    if (statusMatch[1].toLowerCase() === "x") completed.add(task.id);
-  }
-  return completed;
-}
-
-export function markTaskComplete(markdown, taskId, evidence) {
-  if (!TASK_ID_PATTERN.test(taskId)) throw new Error(`Invalid task id: ${taskId}`);
-  const blockPattern = new RegExp(
-    `(<!-- laguna-task:start:${taskId} -->)([\\s\\S]*?)(<!-- laguna-task:end:${taskId} -->)`,
-  );
-  const match = markdown.match(blockPattern);
-  if (!match) throw new Error(`PLAN.md is missing the ${taskId} task block`);
-  if (!/^- \[ \] Status$/m.test(match[2])) {
-    if (/^- \[[xX]\] Status$/m.test(match[2])) return markdown;
-    throw new Error(`PLAN.md has an invalid checkbox for ${taskId}`);
-  }
-
-  const safeEvidence = String(evidence).replace(/\s+/g, " ").trim();
-  const updatedBlock = match[2]
-    .replace(/^- \[ \] Status$/m, "- [x] Status")
-    .replace(
-      /^- \[x\] Status$/m,
-      `- [x] Status\n- Evidence: ${safeEvidence}`,
-    );
-  return markdown.replace(blockPattern, `$1${updatedBlock}$3`);
-}
-
-export function setPlanStatus(markdown, status) {
-  const allowed = new Set(["ready", "running", "failed", "stopped", "complete"]);
-  if (!allowed.has(status)) throw new Error(`Invalid plan status: ${status}`);
-  if (!/^- Status: (ready|running|failed|stopped|complete)$/m.test(markdown)) {
-    throw new Error("PLAN.md has no valid plan status");
-  }
-  return markdown.replace(
-    /^- Status: (ready|running|failed|stopped|complete)$/m,
-    `- Status: ${status}`,
-  );
+Approve writing this plan? This does not start Ralph yet.`;
 }
 
 export function assertPathInside(parent, candidate) {
@@ -266,11 +373,4 @@ export function assertPathInside(parent, candidate) {
     return path.resolve(candidate);
   }
   throw new Error(`Path must stay inside ${path.resolve(parent)}`);
-}
-
-export function formatModelSelector(model) {
-  if (!model || typeof model.provider !== "string" || typeof model.id !== "string") {
-    return null;
-  }
-  return `${model.provider}/${model.id}`;
 }

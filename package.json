@@ -1,25 +1,24 @@
 {
-  "name": "pi-laguna-plan-runner",
-  "version": "0.1.1",
-  "description": "A low-context, one-task-per-process plan runner for Pi and Poolside Laguna models.",
+  "name": "pi-lean-plan",
+  "version": "1.0.0",
+  "description": "Deterministic read-only planning and checklist generation for pi-ralph-loop.",
   "type": "module",
   "license": "MIT",
   "author": "Luis San Pablo",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lsanpablo/pi-laguna-plan-runner.git"
+    "url": "git+https://github.com/lsanpablo/pi-lean-plan.git"
   },
-  "homepage": "https://github.com/lsanpablo/pi-laguna-plan-runner#readme",
+  "homepage": "https://github.com/lsanpablo/pi-lean-plan#readme",
   "bugs": {
-    "url": "https://github.com/lsanpablo/pi-laguna-plan-runner/issues"
+    "url": "https://github.com/lsanpablo/pi-lean-plan/issues"
   },
   "keywords": [
     "pi-package",
     "pi-coding-agent",
-    "poolside",
-    "laguna",
     "ralph-loop",
-    "planning"
+    "planning",
+    "lean-plan"
   ],
   "files": [
     "extensions",
@@ -35,13 +34,9 @@
     "node": ">=20.6.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": {
-      "optional": true
-    },
     "typebox": {
       "optional": true
     }
