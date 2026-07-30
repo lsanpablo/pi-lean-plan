@@ -9,6 +9,7 @@ import {
   renderFinalVerificationScript,
   renderPlanCheckScript,
   renderPlanMarkdown,
+  renderRefinementRequest,
   renderRalphMarkdown,
   slugify,
 } from "../extensions/core.js";
@@ -77,6 +78,26 @@ test("renders an explicit checkbox plan", () => {
   assert.match(markdown, /- \[ \] \*\*T002 — Wire the helper\*\*/);
   assert.match(markdown, /Verification evidence: _pending_/);
   assert.match(markdown, /node --test tests\/sync\.test\.js/);
+});
+
+test("anchors refinement instructions to the rejected draft", () => {
+  const request = renderRefinementRequest(
+    samplePlan(),
+    "Add a task for migration documentation and preserve the two existing tasks.",
+  );
+  assert.match(request, /\[LEAN PLAN REFINEMENT\]/);
+  assert.match(request, /T001\. Add the sync helper/);
+  assert.match(request, /T002\. Wire the helper/);
+  assert.match(request, /Add a task for migration documentation/);
+  assert.match(request, /Preserve unaffected decisions/);
+  assert.match(request, /call lean_finalize_plan\s+again/);
+});
+
+test("rejects empty refinement feedback", () => {
+  assert.throws(
+    () => renderRefinementRequest(samplePlan(), "   "),
+    /refinement feedback must be a non-empty string/,
+  );
 });
 
 test("renders native pi-ralph-loop v2 configuration", () => {

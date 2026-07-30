@@ -15,10 +15,13 @@ import {
   renderOpenQuestionsMarkdown,
   renderPlanCheckScript,
   renderPlanMarkdown,
+  renderRefinementRequest,
   renderRalphMarkdown,
 } from "./core.js";
 
 const PLAN_TOOLS = ["read", "grep", "find", "ls", "lean_finalize_plan"];
+const REFINE_PLAN = "Refine with instructions";
+const CONTINUE_IN_CHAT = "Continue in chat";
 
 async function writeExclusive(filePath, content, mode = 0o644) {
   await fs.writeFile(filePath, content, { encoding: "utf8", flag: "wx", mode });
@@ -148,14 +151,42 @@ export default function leanPlanExtension(pi) {
         renderApprovalPreview(plan),
       );
       if (!approved) {
+        const nextAction = await ctx.ui.select(
+          "The plan was not approved. What next?",
+          [REFINE_PLAN, CONTINUE_IN_CHAT],
+        );
+        if (nextAction === REFINE_PLAN) {
+          const feedback = await ctx.ui.editor(
+            "Describe additions, removals, or corrections",
+            "",
+          );
+          if (feedback?.trim()) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: renderRefinementRequest(plan, feedback),
+                },
+              ],
+              details: {
+                approved: false,
+                action: "refine",
+                feedback: feedback.trim(),
+              },
+            };
+          }
+        }
         return {
           content: [
             {
               type: "text",
-              text: "Plan not approved. Ask what should change, revise it, and submit again.",
+              text:
+                "Plan not approved and no refinement instructions were submitted. " +
+                "Do not guess at changes or resubmit the plan. End this turn and wait " +
+                "for the user's next message.",
             },
           ],
-          details: { approved: false },
+          details: { approved: false, action: "wait" },
         };
       }
 
@@ -291,7 +322,9 @@ Each task must:
 Ask the user directly about decisions that change scope or architecture. Prefer
 3–8 tasks. When no blocking questions remain, call lean_finalize_plan exactly
 once. Its structured output becomes PLAN.md and a native RALPH.md with acceptance
-commands and a required completion gate. After finalizing, do not implement.`,
+commands and a required completion gate. If the user rejects a draft, follow the
+finalizer's returned refinement instructions exactly. If it says to wait, do not
+guess or independently regenerate the plan. After finalizing, do not implement.`,
       },
     };
   });

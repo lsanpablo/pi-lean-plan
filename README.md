@@ -52,6 +52,17 @@ The planning model can inspect with read-only tools and ask questions in the
 conversation. It submits structured tasks, task verification commands, and one
 final verification command. Pi shows them for approval before writing anything.
 
+If you reject a draft, Lean Plan asks whether you want to:
+
+- **Refine with instructions** — enter additions, removals, or corrections in a
+  multi-line editor. The model receives those instructions alongside the
+  rejected draft and submits a revised version for approval.
+- **Continue in chat** — return to the conversation without letting the model
+  guess why the draft was rejected.
+
+You can repeat refinement and review as many times as needed. Nothing is written
+until you approve a draft.
+
 After approval, start the newest plan:
 
 ```text

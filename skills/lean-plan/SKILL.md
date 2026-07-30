@@ -18,6 +18,9 @@ Explore the project without editing it. Produce a compact sequential plan that
 6. Give every task one objective, non-interactive verification command.
 7. Select one broad final verification command.
 8. Call `lean_finalize_plan` only when no blocking questions remain.
+9. When a draft is rejected, apply submitted refinement instructions narrowly
+   and preserve unaffected tasks. If no instructions were submitted, stop and
+   wait for the user's next message instead of guessing.
 
 ## Keep tasks executable
 

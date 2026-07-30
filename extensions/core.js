@@ -367,6 +367,26 @@ Maximum Ralph iterations: ${plan.maxIterations}
 Approve writing this plan? This does not start Ralph yet.`;
 }
 
+export function renderRefinementRequest(plan, feedback) {
+  validatePlan(plan);
+  const requestedChanges = requireText(feedback, "refinement feedback");
+  return `[LEAN PLAN REFINEMENT]
+
+The user did not approve the current draft. Preserve unaffected decisions and
+revise only what is needed to satisfy the explicit feedback.
+
+Current draft:
+
+${renderApprovalPreview(plan)}
+
+User-requested changes:
+
+${requestedChanges}
+
+Do not implement. Update the structured plan, then call lean_finalize_plan
+again so the user can review the revised draft.`;
+}
+
 export function assertPathInside(parent, candidate) {
   const relative = path.relative(path.resolve(parent), path.resolve(candidate));
   if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
