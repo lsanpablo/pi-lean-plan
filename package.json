@@ -1,6 +1,6 @@
 {
   "name": "pi-lean-plan",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Deterministic read-only planning and checklist generation for pi-ralph-loop.",
   "type": "module",
   "license": "MIT",
@@ -27,8 +27,9 @@
     "LICENSE"
   ],
   "scripts": {
+    "build:plan-css": "tailwindcss -i ./assets/plan.css -o ./extensions/plan-tailwind.css --minify",
     "test": "node --test",
-    "check": "npm test && npm pack --dry-run"
+    "check": "npm run build:plan-css && npm test && npm pack --dry-run"
   },
   "engines": {
     "node": ">=20.6.0"
@@ -48,5 +49,9 @@
     "skills": [
       "./skills"
     ]
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
   }
 }

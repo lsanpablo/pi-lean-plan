@@ -7,6 +7,7 @@ Lean Plan does not implement a loop. It gives Pi a read-only planning mode and a
 structured finalization tool, then writes a native Ralph task package:
 
 - `PLAN.md` — approved sequential tasks with checkboxes
+- `PLAN.html` — optional self-contained visual plan generated on demand
 - `RALPH.md` — pi-ralph-loop v2 configuration and iteration prompt
 - `OPEN_QUESTIONS.md` — completion-gate blocker state
 - `check-plan.sh` — acceptance check for task order and completion
@@ -63,6 +64,34 @@ If you reject a draft, Lean Plan asks whether you want to:
 You can repeat refinement and review as many times as needed. Nothing is written
 until you approve a draft.
 
+## Visual plan
+
+Render the newest generated plan as HTML:
+
+```text
+/lean-plan-view
+```
+
+Or provide a generated task folder or its `PLAN.md`:
+
+```text
+/lean-plan-view .pi/lean-plans/add-retry-handling
+/lean-plan-view .pi/lean-plans/add-retry-handling/PLAN.md
+```
+
+The command writes or refreshes `PLAN.html` in that task folder. The visualization
+contains:
+
+- a responsive sequential task-flow diagram;
+- live completion status and verification evidence read from `PLAN.md`;
+- detailed task cards with likely files and commands;
+- a diagram of Ralph's required completion gate;
+- the final verification command.
+
+Tailwind CSS is compiled during package development and embedded directly in the
+HTML. The result has no CDN, JavaScript, font, or other network dependency. Run
+the command again after Ralph iterations to refresh checkbox progress.
+
 After approval, start the newest plan:
 
 ```text
@@ -109,11 +138,14 @@ or unresolved P0/P1 question rejects completion and continues the loop.
 
 - `/lean-plan <request>` — enter read-only planning
 - `/lean-plan-exit` — leave planning without creating files
+- `/lean-plan-view [task folder or PLAN.md]` — generate or refresh `PLAN.html`
 - `/lean-run [task folder]` — hand an approved plan to pi-ralph-loop
 
 ## Development
 
 ```sh
+npm ci
+npm run build:plan-css
 npm test
 npm run check
 ```

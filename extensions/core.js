@@ -1,6 +1,7 @@
 import path from "node:path";
 
 export const PLAN_FILE = "PLAN.md";
+export const PLAN_HTML_FILE = "PLAN.html";
 export const RALPH_FILE = "RALPH.md";
 export const QUESTIONS_FILE = "OPEN_QUESTIONS.md";
 export const PLAN_STATE_FILE = ".lean-plan.json";
@@ -170,6 +171,278 @@ ${tasks}
 ## Final verification
 
 ${shellFence(plan.finalVerification)}
+`;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function taskBlock(markdown, taskId) {
+  const startMarker = `<!-- lean-task:start:${taskId} -->`;
+  const endMarker = `<!-- lean-task:end:${taskId} -->`;
+  const start = markdown.indexOf(startMarker);
+  if (start < 0) return "";
+  const end = markdown.indexOf(endMarker, start + startMarker.length);
+  if (end < 0) return "";
+  return markdown.slice(start + startMarker.length, end);
+}
+
+export function extractPlanProgress(plan, markdown) {
+  validatePlan(plan);
+  if (typeof markdown !== "string") {
+    throw new Error("PLAN.md content must be a string");
+  }
+
+  const tasks = plan.tasks.map((task) => {
+    const block = taskBlock(markdown, task.id);
+    const checkbox = block.match(
+      new RegExp(`^- \\[([ xX])\\] \\*\\*${task.id}\\b`, "m"),
+    );
+    const evidenceMatch = block.match(/^\s*- Verification evidence:\s*(.+)$/m);
+    const rawEvidence = evidenceMatch?.[1]?.trim() ?? "";
+    return {
+      id: task.id,
+      complete: checkbox ? checkbox[1].toLowerCase() === "x" : false,
+      evidence:
+        rawEvidence && rawEvidence !== "_pending_" ? rawEvidence : null,
+      structureFound: Boolean(block && checkbox),
+    };
+  });
+  const completeCount = tasks.filter((task) => task.complete).length;
+  const totalCount = tasks.length;
+  return {
+    tasks,
+    completeCount,
+    totalCount,
+    percentComplete: Math.round((completeCount / totalCount) * 100),
+  };
+}
+
+function renderDiagramArrow() {
+  return `<div class="flex shrink-0 items-center justify-center px-1 text-slate-600" aria-hidden="true">
+  <svg class="size-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14m-5-5 5 5-5 5" />
+  </svg>
+</div>`;
+}
+
+function renderFlowTask(task, state, isCurrent) {
+  let containerClasses =
+    "border-slate-700/80 bg-slate-900/80 text-slate-300";
+  let badgeClasses = "bg-slate-800 text-slate-400 ring-slate-700";
+  let status = "Queued";
+  if (state.complete) {
+    containerClasses =
+      "border-emerald-400/40 bg-emerald-400/10 text-emerald-100";
+    badgeClasses = "bg-emerald-400/15 text-emerald-300 ring-emerald-400/30";
+    status = "Complete";
+  } else if (isCurrent) {
+    containerClasses =
+      "border-amber-300/50 bg-amber-300/10 text-amber-50 shadow-amber-950/30";
+    badgeClasses = "bg-amber-300/15 text-amber-200 ring-amber-300/30";
+    status = "Next";
+  }
+  return `<article class="w-64 shrink-0 rounded-2xl border p-4 shadow-xl ${containerClasses}">
+  <div class="flex items-center justify-between gap-3">
+    <span class="font-mono text-xs tracking-widest text-slate-400">${escapeHtml(task.id)}</span>
+    <span class="rounded-full px-2.5 py-1 text-[0.65rem] font-semibold uppercase tracking-wider ring-1 ring-inset ${badgeClasses}">${status}</span>
+  </div>
+  <h3 class="mt-3 text-sm font-semibold leading-5">${escapeHtml(task.title)}</h3>
+</article>`;
+}
+
+function renderTaskCard(task, state, index) {
+  const statusClasses = state.complete
+    ? "bg-emerald-400/15 text-emerald-300 ring-emerald-400/30"
+    : "bg-slate-800 text-slate-300 ring-slate-700";
+  const status = state.complete ? "Complete" : "Pending";
+  const files = task.files.length
+    ? task.files
+        .map(
+          (file) =>
+            `<code class="rounded-md bg-slate-950/80 px-2 py-1 text-xs text-cyan-200 ring-1 ring-slate-800">${escapeHtml(file)}</code>`,
+        )
+        .join("\n")
+    : '<span class="text-sm text-slate-500">Discover relevant files locally</span>';
+  const evidence = state.evidence
+    ? `<p class="mt-2 text-sm text-emerald-200">${escapeHtml(state.evidence)}</p>`
+    : '<p class="mt-2 text-sm text-slate-500">Pending successful verification</p>';
+
+  return `<article class="group rounded-3xl border border-slate-800 bg-slate-900/70 p-6 shadow-2xl shadow-slate-950/30 transition hover:border-slate-700">
+  <div class="flex flex-wrap items-start justify-between gap-4">
+    <div>
+      <p class="font-mono text-xs uppercase tracking-[0.2em] text-indigo-300">Task ${String(index + 1).padStart(2, "0")} · ${escapeHtml(task.id)}</p>
+      <h3 class="mt-2 text-xl font-semibold text-white">${escapeHtml(task.title)}</h3>
+    </div>
+    <span class="rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wider ring-1 ring-inset ${statusClasses}">${status}</span>
+  </div>
+  <p class="mt-5 whitespace-pre-line text-sm leading-6 text-slate-300">${escapeHtml(task.instructions)}</p>
+  <div class="mt-6">
+    <h4 class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Likely files</h4>
+    <div class="mt-3 flex flex-wrap gap-2">${files}</div>
+  </div>
+  <div class="mt-6 rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+    <div class="flex items-center justify-between gap-3">
+      <h4 class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Verification</h4>
+      <span class="text-xs text-slate-600">depends on ${escapeHtml(task.dependsOn ?? "none")}</span>
+    </div>
+    <pre class="mt-3 overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-5 text-cyan-200"><code>${escapeHtml(task.verification)}</code></pre>
+    ${evidence}
+  </div>
+</article>`;
+}
+
+export function renderPlanHtml(
+  plan,
+  planMarkdown,
+  tailwindCss,
+  generatedAt = new Date(),
+) {
+  validatePlan(plan);
+  if (typeof tailwindCss !== "string" || tailwindCss.trim() === "") {
+    throw new Error("Compiled Tailwind CSS must be provided");
+  }
+  const progress = extractPlanProgress(plan, planMarkdown);
+  const firstPending = progress.tasks.findIndex((task) => !task.complete);
+  const flow = plan.tasks
+    .flatMap((task, index) => [
+      index > 0 ? renderDiagramArrow() : "",
+      renderFlowTask(task, progress.tasks[index], index === firstPending),
+    ])
+    .join("\n");
+  const cards = plan.tasks
+    .map((task, index) => renderTaskCard(task, progress.tasks[index], index))
+    .join("\n");
+  const createdAt = new Date(plan.createdAt);
+  const safeCreatedAt = Number.isNaN(createdAt.getTime())
+    ? escapeHtml(plan.createdAt)
+    : escapeHtml(createdAt.toLocaleString());
+  const generatedIso = generatedAt.toISOString();
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>${escapeHtml(plan.title)} · Lean Plan</title>
+  <style>${tailwindCss}</style>
+  <style>
+    @media print {
+      body { background: white !important; color: #0f172a !important; }
+      .no-print { display: none !important; }
+      article, section { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body class="min-h-screen bg-[#050914] text-slate-200 antialiased selection:bg-indigo-400/30">
+  <div class="pointer-events-none fixed inset-0 -z-10 overflow-hidden no-print" aria-hidden="true">
+    <div class="absolute left-1/2 top-0 h-[32rem] w-[70rem] -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl"></div>
+    <div class="absolute bottom-0 right-0 h-96 w-96 rounded-full bg-cyan-400/5 blur-3xl"></div>
+  </div>
+
+  <main class="mx-auto max-w-7xl px-5 py-10 sm:px-8 lg:px-10 lg:py-16">
+    <header class="rounded-[2rem] border border-slate-800 bg-slate-950/75 p-7 shadow-2xl shadow-indigo-950/20 backdrop-blur sm:p-10">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div class="flex items-center gap-3">
+          <span class="rounded-full bg-indigo-400/15 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-indigo-300 ring-1 ring-indigo-400/30">Lean Plan</span>
+          <span class="text-xs text-slate-500">Created ${safeCreatedAt}</span>
+        </div>
+        <span class="font-mono text-xs text-slate-600">v${escapeHtml(plan.version)}</span>
+      </div>
+      <h1 class="mt-7 max-w-4xl text-4xl font-semibold tracking-tight text-white sm:text-5xl">${escapeHtml(plan.title)}</h1>
+      <p class="mt-5 max-w-4xl whitespace-pre-line text-base leading-7 text-slate-300 sm:text-lg">${escapeHtml(plan.objective)}</p>
+
+      <div class="mt-9 grid gap-4 sm:grid-cols-3">
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Progress</p>
+          <p class="mt-2 text-3xl font-semibold text-white">${progress.completeCount}<span class="text-lg text-slate-500">/${progress.totalCount}</span></p>
+          <div class="mt-4 h-2 overflow-hidden rounded-full bg-slate-800">
+            <div class="h-full rounded-full bg-linear-to-r from-indigo-400 to-cyan-300" style="width: ${progress.percentComplete}%"></div>
+          </div>
+        </div>
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Execution</p>
+          <p class="mt-2 text-3xl font-semibold text-white">1</p>
+          <p class="mt-2 text-sm text-slate-400">task per fresh Ralph iteration</p>
+        </div>
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Iteration limit</p>
+          <p class="mt-2 text-3xl font-semibold text-white">${escapeHtml(plan.maxIterations)}</p>
+          <p class="mt-2 text-sm text-slate-400">with required completion gating</p>
+        </div>
+      </div>
+    </header>
+
+    <section class="mt-10 rounded-[2rem] border border-slate-800 bg-slate-950/60 p-6 sm:p-8" aria-labelledby="flow-title">
+      <div class="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-300">Execution diagram</p>
+          <h2 id="flow-title" class="mt-2 text-2xl font-semibold text-white">Sequential task flow</h2>
+        </div>
+        <p class="text-sm text-slate-500">Scroll horizontally to inspect the complete chain</p>
+      </div>
+      <div class="mt-7 overflow-x-auto pb-3">
+        <div class="flex min-w-max items-stretch">${flow}${renderDiagramArrow()}
+          <article class="flex w-64 shrink-0 flex-col justify-center rounded-2xl border border-indigo-400/40 bg-indigo-400/10 p-4 text-indigo-100 shadow-xl">
+            <span class="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-300">Acceptance gate</span>
+            <h3 class="mt-3 text-sm font-semibold">Verify every completion condition</h3>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="mt-10" aria-labelledby="tasks-title">
+      <div>
+        <p class="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-300">Work breakdown</p>
+        <h2 id="tasks-title" class="mt-2 text-2xl font-semibold text-white">Plan tasks</h2>
+      </div>
+      <div class="mt-6 grid gap-6 lg:grid-cols-2">${cards}</div>
+    </section>
+
+    <section class="mt-10 rounded-[2rem] border border-indigo-400/25 bg-indigo-400/5 p-6 sm:p-8" aria-labelledby="gate-title">
+      <p class="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-300">Completion diagram</p>
+      <h2 id="gate-title" class="mt-2 text-2xl font-semibold text-white">Required Ralph gate</h2>
+      <div class="mt-7 flex flex-col items-stretch gap-3 lg:flex-row lg:items-center">
+        <div class="flex-1 rounded-2xl border border-slate-700 bg-slate-900/80 p-5">
+          <p class="font-mono text-xs text-emerald-300">01 · CHECKLIST</p>
+          <p class="mt-2 font-semibold text-white">Every task checked in order</p>
+        </div>
+        ${renderDiagramArrow()}
+        <div class="flex-1 rounded-2xl border border-slate-700 bg-slate-900/80 p-5">
+          <p class="font-mono text-xs text-emerald-300">02 · QUESTIONS</p>
+          <p class="mt-2 font-semibold text-white">No unresolved P0 or P1 items</p>
+        </div>
+        ${renderDiagramArrow()}
+        <div class="flex-1 rounded-2xl border border-slate-700 bg-slate-900/80 p-5">
+          <p class="font-mono text-xs text-emerald-300">03 · VERIFY</p>
+          <p class="mt-2 font-semibold text-white">Final command exits successfully</p>
+        </div>
+        ${renderDiagramArrow()}
+        <div class="flex-1 rounded-2xl border border-emerald-400/40 bg-emerald-400/10 p-5">
+          <p class="font-mono text-xs text-emerald-300">DONE</p>
+          <p class="mt-2 font-semibold text-emerald-50">LEAN_PLAN_COMPLETE</p>
+        </div>
+      </div>
+      <div class="mt-7 rounded-2xl border border-slate-800 bg-slate-950/80 p-5">
+        <h3 class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Final verification</h3>
+        <pre class="mt-3 overflow-x-auto whitespace-pre-wrap font-mono text-sm leading-6 text-cyan-200"><code>${escapeHtml(plan.finalVerification)}</code></pre>
+      </div>
+    </section>
+
+    <footer class="mt-10 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 pt-6 text-xs text-slate-600">
+      <p>Generated deterministically from <code>PLAN.md</code> and <code>.lean-plan.json</code>.</p>
+      <time datetime="${escapeHtml(generatedIso)}">Rendered ${escapeHtml(generatedAt.toLocaleString())}</time>
+    </footer>
+  </main>
+</body>
+</html>
 `;
 }
 

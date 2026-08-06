@@ -5,9 +5,11 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
+  extractPlanProgress,
   normalizePlan,
   renderFinalVerificationScript,
   renderPlanCheckScript,
+  renderPlanHtml,
   renderPlanMarkdown,
   renderRefinementRequest,
   renderRalphMarkdown,
@@ -78,6 +80,45 @@ test("renders an explicit checkbox plan", () => {
   assert.match(markdown, /- \[ \] \*\*T002 — Wire the helper\*\*/);
   assert.match(markdown, /Verification evidence: _pending_/);
   assert.match(markdown, /node --test tests\/sync\.test\.js/);
+});
+
+test("extracts live checkbox and verification evidence", () => {
+  const plan = samplePlan();
+  const markdown = renderPlanMarkdown(plan)
+    .replace(
+      "- [ ] **T001 — Add the sync helper**",
+      "- [x] **T001 — Add the sync helper**",
+    )
+    .replace(
+      "  - Verification evidence: _pending_",
+      "  - Verification evidence: 12 focused tests passed",
+    );
+  const progress = extractPlanProgress(plan, markdown);
+  assert.equal(progress.completeCount, 1);
+  assert.equal(progress.totalCount, 2);
+  assert.equal(progress.percentComplete, 50);
+  assert.equal(progress.tasks[0].complete, true);
+  assert.equal(progress.tasks[0].evidence, "12 focused tests passed");
+  assert.equal(progress.tasks[1].complete, false);
+});
+
+test("renders a self-contained Tailwind plan visualization", () => {
+  const plan = samplePlan();
+  plan.title = "Guarded <widget> & sync";
+  const markdown = renderPlanMarkdown(plan);
+  const html = renderPlanHtml(
+    plan,
+    markdown,
+    "/* compiled tailwind */ body{display:block}",
+    new Date("2026-08-06T12:00:00.000Z"),
+  );
+  assert.match(html, /^<!doctype html>/);
+  assert.match(html, /\/\* compiled tailwind \*\//);
+  assert.match(html, /Sequential task flow/);
+  assert.match(html, /Required Ralph gate/);
+  assert.match(html, /LEAN_PLAN_COMPLETE/);
+  assert.match(html, /Guarded &lt;widget&gt; &amp; sync/);
+  assert.doesNotMatch(html, /cdn\.jsdelivr|<script>/);
 });
 
 test("anchors refinement instructions to the rejected draft", () => {

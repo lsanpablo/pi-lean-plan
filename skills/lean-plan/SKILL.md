@@ -35,3 +35,8 @@ Explore the project without editing it. Produce a compact sequential plan that
 The finalizer assigns stable task IDs, asks for human approval, and writes
 `PLAN.md`, `OPEN_QUESTIONS.md`, acceptance scripts, and a native
 pi-ralph-loop v2 `RALPH.md`. It does not implement a loop or start one.
+
+After approval, `/lean-plan-view [task folder or PLAN.md]` can deterministically
+render the plan as a self-contained Tailwind HTML visualization. Use the command
+when the user asks to see, share, or refresh a visual plan; do not spend a model
+turn recreating the diagram manually.

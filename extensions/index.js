@@ -5,6 +5,7 @@ import {
   FINAL_CHECK_FILE,
   PLAN_CHECK_FILE,
   PLAN_FILE,
+  PLAN_HTML_FILE,
   PLAN_STATE_FILE,
   QUESTIONS_FILE,
   RALPH_FILE,
@@ -14,6 +15,7 @@ import {
   renderFinalVerificationScript,
   renderOpenQuestionsMarkdown,
   renderPlanCheckScript,
+  renderPlanHtml,
   renderPlanMarkdown,
   renderRefinementRequest,
   renderRalphMarkdown,
@@ -25,6 +27,16 @@ const CONTINUE_IN_CHAT = "Continue in chat";
 
 async function writeExclusive(filePath, content, mode = 0o644) {
   await fs.writeFile(filePath, content, { encoding: "utf8", flag: "wx", mode });
+}
+
+async function writeAtomic(filePath, content, mode = 0o644) {
+  const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await fs.writeFile(temporaryPath, content, { encoding: "utf8", mode });
+    await fs.rename(temporaryPath, filePath);
+  } finally {
+    await fs.rm(temporaryPath, { force: true });
+  }
 }
 
 async function createUniquePlanDirectory(cwd, slug) {
@@ -60,7 +72,9 @@ async function resolvePlanDirectory(cwd, requestedPath) {
 
   if (requestedPath.trim()) {
     const requested = path.resolve(cwd, requestedPath.trim());
-    candidate = path.basename(requested) === RALPH_FILE ? path.dirname(requested) : requested;
+    candidate = [RALPH_FILE, PLAN_FILE].includes(path.basename(requested))
+      ? path.dirname(requested)
+      : requested;
   } else {
     let entries;
     try {
@@ -298,6 +312,40 @@ export default function leanPlanExtension(pi) {
 
       const relativeDirectory = displayPath(ctx.cwd, planDirectory).replaceAll(path.sep, "/");
       pi.sendUserMessage(`/ralph --path ${JSON.stringify(relativeDirectory)}`);
+    },
+  });
+
+  pi.registerCommand("lean-plan-view", {
+    description: "Render a generated Lean plan as a visual Tailwind HTML file",
+    handler: async (args, ctx) => {
+      if (planning) {
+        ctx.ui.notify("Approve or exit the current planning session first.", "warning");
+        return;
+      }
+
+      let planDirectory;
+      try {
+        planDirectory = await resolvePlanDirectory(ctx.cwd, args);
+        const statePath = path.join(planDirectory, PLAN_STATE_FILE);
+        const planPath = path.join(planDirectory, PLAN_FILE);
+        const cssPath = new URL("./plan-tailwind.css", import.meta.url);
+        const [stateText, planMarkdown, tailwindCss] = await Promise.all([
+          fs.readFile(statePath, "utf8"),
+          fs.readFile(planPath, "utf8"),
+          fs.readFile(cssPath, "utf8"),
+        ]);
+        const plan = JSON.parse(stateText);
+        const html = renderPlanHtml(plan, planMarkdown, tailwindCss);
+        const outputPath = path.join(planDirectory, PLAN_HTML_FILE);
+        assertPathInside(ctx.cwd, outputPath);
+        await writeAtomic(outputPath, html);
+        ctx.ui.notify(
+          `Visual plan written to ${displayPath(ctx.cwd, outputPath).replaceAll(path.sep, "/")}`,
+          "info",
+        );
+      } catch (error) {
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      }
     },
   });
 
