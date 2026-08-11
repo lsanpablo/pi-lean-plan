@@ -2,6 +2,7 @@ import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 import { Type } from "typebox";
 import {
+  DRAFT_FILE,
   FINAL_CHECK_FILE,
   PLAN_CHECK_FILE,
   PLAN_FILE,
@@ -12,18 +13,58 @@ import {
   assertPathInside,
   normalizePlan,
   renderApprovalPreview,
+  renderDraftMarkdown,
   renderFinalVerificationScript,
   renderOpenQuestionsMarkdown,
   renderPlanCheckScript,
   renderPlanHtml,
   renderPlanMarkdown,
   renderRefinementRequest,
+  renderResumeRequest,
   renderRalphMarkdown,
+  validatePlan,
 } from "./core.js";
 
-const PLAN_TOOLS = ["read", "grep", "find", "ls", "lean_finalize_plan"];
+const PLAN_TOOLS = [
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "lean_finalize_plan",
+  "lean_save_plan",
+];
 const REFINE_PLAN = "Refine with instructions";
+const SAVE_DRAFT = "Save draft and exit";
 const CONTINUE_IN_CHAT = "Continue in chat";
+
+function planParameters() {
+  return Type.Object({
+    title: Type.String({ description: "Short plan title" }),
+    objective: Type.String({
+      description: "Concrete outcome, scope, constraints, and important behavior",
+    }),
+    tasks: Type.Array(
+      Type.Object({
+        title: Type.String({ description: "Small outcome-oriented task title" }),
+        instructions: Type.String({
+          description: "Standalone instructions for a fresh Ralph iteration",
+        }),
+        files: Type.Optional(
+          Type.Array(Type.String(), {
+            description: "Likely project-relative files to inspect or edit",
+          }),
+        ),
+        verification: Type.String({
+          description: "Non-interactive shell command proving this task succeeded",
+        }),
+      }),
+      { minItems: 1, maxItems: 12 },
+    ),
+    final_verification: Type.String({
+      description: "Non-interactive command used as Ralph acceptance evidence",
+    }),
+  });
+}
 
 async function writeExclusive(filePath, content, mode = 0o644) {
   await fs.writeFile(filePath, content, { encoding: "utf8", flag: "wx", mode });
@@ -39,8 +80,8 @@ async function writeAtomic(filePath, content, mode = 0o644) {
   }
 }
 
-async function createUniquePlanDirectory(cwd, slug) {
-  const root = path.join(cwd, ".pi", "lean-plans");
+async function createUniqueDirectory(cwd, collection, slug) {
+  const root = path.join(cwd, ".pi", collection);
   await fs.mkdir(root, { recursive: true });
   for (let suffix = 1; suffix <= 100; suffix += 1) {
     const name = suffix === 1 ? slug : `${slug}-${suffix}`;
@@ -53,6 +94,32 @@ async function createUniquePlanDirectory(cwd, slug) {
     }
   }
   throw new Error(`Could not allocate a unique plan directory for ${slug}`);
+}
+
+async function createUniquePlanDirectory(cwd, slug) {
+  return createUniqueDirectory(cwd, "lean-plans", slug);
+}
+
+async function createUniqueDraftDirectory(cwd, slug) {
+  return createUniqueDirectory(cwd, "lean-drafts", slug);
+}
+
+async function writeDraftPackage(cwd, plan) {
+  const draftDirectory = await createUniqueDraftDirectory(cwd, plan.slug);
+  try {
+    await writeExclusive(
+      path.join(draftDirectory, PLAN_STATE_FILE),
+      `${JSON.stringify(plan, null, 2)}\n`,
+    );
+    await writeExclusive(
+      path.join(draftDirectory, DRAFT_FILE),
+      renderDraftMarkdown(plan),
+    );
+  } catch (error) {
+    await fs.rm(draftDirectory, { recursive: true, force: true });
+    throw error;
+  }
+  return draftDirectory;
 }
 
 function displayPath(cwd, target) {
@@ -107,50 +174,132 @@ async function resolvePlanDirectory(cwd, requestedPath) {
   return candidate;
 }
 
+async function resolveStoredPlan(cwd, requestedPath) {
+  const draftRoot = path.join(cwd, ".pi", "lean-drafts");
+  let candidate;
+
+  if (requestedPath.trim()) {
+    const requested = path.resolve(cwd, requestedPath.trim());
+    candidate = [DRAFT_FILE, PLAN_FILE, PLAN_STATE_FILE].includes(
+      path.basename(requested),
+    )
+      ? path.dirname(requested)
+      : requested;
+  } else {
+    let entries;
+    try {
+      entries = await fs.readdir(draftRoot, { withFileTypes: true });
+    } catch {
+      throw new Error(
+        "No saved Lean drafts found. Ask the planner to save one with lean_save_plan.",
+      );
+    }
+    const drafts = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const directory = path.join(draftRoot, entry.name);
+      const statePath = path.join(directory, PLAN_STATE_FILE);
+      try {
+        const stat = await fs.stat(statePath);
+        drafts.push({ directory, modified: stat.mtimeMs });
+      } catch {
+        // Ignore incomplete draft directories.
+      }
+    }
+    drafts.sort((a, b) => b.modified - a.modified);
+    if (drafts.length === 0) {
+      throw new Error(
+        "No saved Lean drafts found. Ask the planner to save one with lean_save_plan.",
+      );
+    }
+    candidate = drafts[0].directory;
+  }
+
+  assertPathInside(cwd, candidate);
+  const statePath = path.join(candidate, PLAN_STATE_FILE);
+  const stateText = await fs.readFile(statePath, "utf8");
+  const plan = validatePlan(JSON.parse(stateText));
+  const draftPath = path.join(candidate, DRAFT_FILE);
+  const approvedPath = path.join(candidate, PLAN_FILE);
+  let sourcePath;
+  try {
+    await fs.access(draftPath, fsConstants.R_OK);
+    sourcePath = draftPath;
+  } catch {
+    await fs.access(approvedPath, fsConstants.R_OK);
+    sourcePath = approvedPath;
+  }
+  return { directory: candidate, plan, sourcePath };
+}
+
 export default function leanPlanExtension(pi) {
   let planning = false;
   let planFinalized = false;
   let savedTools = null;
+  let currentDraft = null;
+
+  const startPlanning = (ctx, draft = null) => {
+    savedTools = pi.getActiveTools();
+    planning = true;
+    planFinalized = false;
+    currentDraft = draft;
+    pi.setActiveTools(PLAN_TOOLS);
+    ctx.ui.setStatus("lean-plan", ctx.ui.theme.fg("warning", "read-only planning"));
+  };
 
   const restoreTools = (ctx) => {
     if (savedTools) pi.setActiveTools(savedTools);
     savedTools = null;
     planning = false;
     planFinalized = false;
+    currentDraft = null;
     if (ctx.hasUI) ctx.ui.setStatus("lean-plan", undefined);
   };
+
+  const saveDraft = async (ctx, plan) => {
+    const draftDirectory = await writeDraftPackage(ctx.cwd, plan);
+    planFinalized = true;
+    return displayPath(ctx.cwd, draftDirectory).replaceAll(path.sep, "/");
+  };
+
+  pi.registerTool({
+    name: "lean_save_plan",
+    label: "Save Lean plan draft",
+    description:
+      "Save a structured plan as resumable Markdown without approving it or creating a Ralph task. Call only when the user explicitly asks to save or defer the plan.",
+    parameters: planParameters(),
+    async execute(_toolCallId, input, _signal, _onUpdate, ctx) {
+      if (!planning || planFinalized) {
+        throw new Error("Start a new planning session with /lean-plan first.");
+      }
+      const plan = normalizePlan(input);
+      currentDraft = plan;
+      const relativeDirectory = await saveDraft(ctx, plan);
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Draft written to ${relativeDirectory}/${DRAFT_FILE}. ` +
+              `Do not implement it. Tell the user they can open a new session and run ` +
+              `/lean-plan-resume ${relativeDirectory}.`,
+          },
+        ],
+        details: {
+          saved: true,
+          approved: false,
+          draftDirectory: relativeDirectory,
+        },
+      };
+    },
+  });
 
   pi.registerTool({
     name: "lean_finalize_plan",
     label: "Finalize Lean plan",
     description:
       "Present a sequential plan for approval and write a native pi-ralph-loop task package. This never runs a loop itself.",
-    parameters: Type.Object({
-      title: Type.String({ description: "Short plan title" }),
-      objective: Type.String({
-        description: "Concrete outcome, scope, constraints, and important behavior",
-      }),
-      tasks: Type.Array(
-        Type.Object({
-          title: Type.String({ description: "Small outcome-oriented task title" }),
-          instructions: Type.String({
-            description: "Standalone instructions for a fresh Ralph iteration",
-          }),
-          files: Type.Optional(
-            Type.Array(Type.String(), {
-              description: "Likely project-relative files to inspect or edit",
-            }),
-          ),
-          verification: Type.String({
-            description: "Non-interactive shell command proving this task succeeded",
-          }),
-        }),
-        { minItems: 1, maxItems: 12 },
-      ),
-      final_verification: Type.String({
-        description: "Non-interactive command used as Ralph acceptance evidence",
-      }),
-    }),
+    parameters: planParameters(),
     async execute(_toolCallId, input, _signal, _onUpdate, ctx) {
       if (!planning || planFinalized) {
         throw new Error("Start a new planning session with /lean-plan first.");
@@ -160,6 +309,7 @@ export default function leanPlanExtension(pi) {
       }
 
       const plan = normalizePlan(input);
+      currentDraft = plan;
       const approved = await ctx.ui.confirm(
         `Approve ${plan.tasks.length}-task Lean plan?`,
         renderApprovalPreview(plan),
@@ -167,7 +317,7 @@ export default function leanPlanExtension(pi) {
       if (!approved) {
         const nextAction = await ctx.ui.select(
           "The plan was not approved. What next?",
-          [REFINE_PLAN, CONTINUE_IN_CHAT],
+          [REFINE_PLAN, SAVE_DRAFT, CONTINUE_IN_CHAT],
         );
         if (nextAction === REFINE_PLAN) {
           const feedback = await ctx.ui.editor(
@@ -189,6 +339,25 @@ export default function leanPlanExtension(pi) {
               },
             };
           }
+        }
+        if (nextAction === SAVE_DRAFT) {
+          const relativeDirectory = await saveDraft(ctx, plan);
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `Unapproved draft written to ${relativeDirectory}/${DRAFT_FILE}. ` +
+                  `Do not implement it. Tell the user they can open a new session and run ` +
+                  `/lean-plan-resume ${relativeDirectory}.`,
+              },
+            ],
+            details: {
+              approved: false,
+              action: "save",
+              draftDirectory: relativeDirectory,
+            },
+          };
         }
         return {
           content: [
@@ -262,13 +431,9 @@ export default function leanPlanExtension(pi) {
         ctx.ui.notify("Lean planning mode is already active.", "info");
         return;
       }
-      savedTools = pi.getActiveTools();
-      planning = true;
-      planFinalized = false;
-      pi.setActiveTools(PLAN_TOOLS);
-      ctx.ui.setStatus("lean-plan", ctx.ui.theme.fg("warning", "read-only planning"));
+      startPlanning(ctx);
       ctx.ui.notify(
-        "Read-only planning enabled. The approved output will be handed to pi-ralph-loop.",
+        "Read-only planning enabled. Approve for Ralph or save a resumable draft.",
         "info",
       );
       if (args.trim()) pi.sendUserMessage(args.trim());
@@ -284,6 +449,57 @@ export default function leanPlanExtension(pi) {
       }
       restoreTools(ctx);
       ctx.ui.notify("Lean planning mode disabled.", "info");
+    },
+  });
+
+  pi.registerCommand("lean-plan-save", {
+    description: "Save the most recently submitted Lean plan as a resumable draft",
+    handler: async (_args, ctx) => {
+      if (!planning) {
+        ctx.ui.notify("Lean planning mode is not active.", "info");
+        return;
+      }
+      if (planFinalized) {
+        ctx.ui.notify("The current plan has already been stored.", "info");
+        return;
+      }
+      if (!currentDraft) {
+        ctx.ui.notify(
+          "No structured draft is available yet. Ask the planner to save the plan first.",
+          "warning",
+        );
+        return;
+      }
+      try {
+        const relativeDirectory = await saveDraft(ctx, currentDraft);
+        restoreTools(ctx);
+        ctx.ui.notify(
+          `Draft written to ${relativeDirectory}/${DRAFT_FILE}. Resume with /lean-plan-resume ${relativeDirectory}`,
+          "info",
+        );
+      } catch (error) {
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      }
+    },
+  });
+
+  pi.registerCommand("lean-plan-resume", {
+    description: "Load a saved draft or approved plan into read-only planning",
+    handler: async (args, ctx) => {
+      if (planning) {
+        ctx.ui.notify("Lean planning mode is already active.", "info");
+        return;
+      }
+      try {
+        const stored = await resolveStoredPlan(ctx.cwd, args);
+        const source = displayPath(ctx.cwd, stored.sourcePath).replaceAll(path.sep, "/");
+        startPlanning(ctx, stored.plan);
+        ctx.ui.notify(`Read-only planning resumed from ${source}.`, "info");
+        pi.sendUserMessage(renderResumeRequest(stored.plan, source));
+      } catch (error) {
+        if (planning) restoreTools(ctx);
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      }
     },
   });
 
@@ -369,10 +585,13 @@ Each task must:
 
 Ask the user directly about decisions that change scope or architecture. Prefer
 3–8 tasks. When no blocking questions remain, call lean_finalize_plan exactly
-once. Its structured output becomes PLAN.md and a native RALPH.md with acceptance
-commands and a required completion gate. If the user rejects a draft, follow the
-finalizer's returned refinement instructions exactly. If it says to wait, do not
-guess or independently regenerate the plan. After finalizing, do not implement.`,
+once unless the user explicitly asks to save or defer the plan. In that case,
+call lean_save_plan exactly once instead. Saving writes resumable Markdown but
+does not approve the plan or create a Ralph task. Finalizing creates PLAN.md and
+a native RALPH.md with acceptance commands and a required completion gate. If
+the user rejects a draft, follow the finalizer's returned refinement instructions
+exactly. If it says to wait, do not guess or independently regenerate the plan.
+After saving or finalizing, do not implement.`,
       },
     };
   });
@@ -385,10 +604,10 @@ guess or independently regenerate the plan. After finalizing, do not implement.`
         reason: `Lean planning is read-only. ${event.toolName} is unavailable until planning ends.`,
       };
     }
-    if (planFinalized && event.toolName !== "lean_finalize_plan") {
+    if (planFinalized) {
       return {
         block: true,
-        reason: "The plan is finalized. End the response without further tool calls.",
+        reason: "The plan has been stored. End the response without further tool calls.",
       };
     }
   });

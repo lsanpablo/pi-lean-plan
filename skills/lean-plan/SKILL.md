@@ -17,10 +17,14 @@ Explore the project without editing it. Produce a compact sequential plan that
 5. Make every task usable without chat history or prior-iteration memory.
 6. Give every task one objective, non-interactive verification command.
 7. Select one broad final verification command.
-8. Call `lean_finalize_plan` only when no blocking questions remain.
+8. Call `lean_finalize_plan` only when no blocking questions remain and the user
+   wants to review the plan for approval.
 9. When a draft is rejected, apply submitted refinement instructions narrowly
    and preserve unaffected tasks. If no instructions were submitted, stop and
    wait for the user's next message instead of guessing.
+10. If the user explicitly asks to save or defer the plan, call
+    `lean_save_plan` instead of the finalizer. This is the only planning write
+    allowed without approval.
 
 ## Keep tasks executable
 
@@ -35,6 +39,11 @@ Explore the project without editing it. Produce a compact sequential plan that
 The finalizer assigns stable task IDs, asks for human approval, and writes
 `PLAN.md`, `OPEN_QUESTIONS.md`, acceptance scripts, and a native
 pi-ralph-loop v2 `RALPH.md`. It does not implement a loop or start one.
+
+`lean_save_plan` writes a non-runnable `DRAFT.md` plus structured state under
+`.pi/lean-drafts/`. In a later session, `/lean-plan-resume [path]` restores the
+complete task details and returns to read-only planning. Do not recreate a saved
+plan from memory when the resume command can load it.
 
 After approval, `/lean-plan-view [task folder or PLAN.md]` can deterministically
 render the plan as a self-contained Tailwind HTML visualization. Use the command

@@ -7,11 +7,13 @@ import test from "node:test";
 import {
   extractPlanProgress,
   normalizePlan,
+  renderDraftMarkdown,
   renderFinalVerificationScript,
   renderPlanCheckScript,
   renderPlanHtml,
   renderPlanMarkdown,
   renderRefinementRequest,
+  renderResumeRequest,
   renderRalphMarkdown,
   slugify,
 } from "../extensions/core.js";
@@ -82,6 +84,16 @@ test("renders an explicit checkbox plan", () => {
   assert.match(markdown, /node --test tests\/sync\.test\.js/);
 });
 
+test("renders an unapproved resumable Markdown draft", () => {
+  const markdown = renderDraftMarkdown(samplePlan());
+  assert.match(markdown, /^<!-- lean-plan-draft:v1 -->/);
+  assert.match(markdown, /- Status: draft/);
+  assert.match(markdown, /Execution: not approved/);
+  assert.match(markdown, /## Proposed tasks/);
+  assert.match(markdown, /## Proposed final verification/);
+  assert.doesNotMatch(markdown, /- Status: approved/);
+});
+
 test("extracts live checkbox and verification evidence", () => {
   const plan = samplePlan();
   const markdown = renderPlanMarkdown(plan)
@@ -139,6 +151,19 @@ test("rejects empty refinement feedback", () => {
     () => renderRefinementRequest(samplePlan(), "   "),
     /refinement feedback must be a non-empty string/,
   );
+});
+
+test("renders a complete low-context resume request", () => {
+  const request = renderResumeRequest(
+    samplePlan(),
+    ".pi/lean-drafts/add-guarded-widget-sync/DRAFT.md",
+  );
+  assert.match(request, /\[LEAN PLAN RESUME\]/);
+  assert.match(request, /\.pi\/lean-drafts\/add-guarded-widget-sync\/DRAFT\.md/);
+  assert.match(request, /Implement the helper and focused tests/);
+  assert.match(request, /lean_finalize_plan/);
+  assert.match(request, /lean_save_plan/);
+  assert.match(request, /do not\nimplement it/);
 });
 
 test("renders native pi-ralph-loop v2 configuration", () => {

@@ -1,6 +1,7 @@
 import path from "node:path";
 
 export const PLAN_FILE = "PLAN.md";
+export const DRAFT_FILE = "DRAFT.md";
 export const PLAN_HTML_FILE = "PLAN.html";
 export const RALPH_FILE = "RALPH.md";
 export const QUESTIONS_FILE = "OPEN_QUESTIONS.md";
@@ -172,6 +173,19 @@ ${tasks}
 
 ${shellFence(plan.finalVerification)}
 `;
+}
+
+export function renderDraftMarkdown(plan) {
+  return renderPlanMarkdown(plan)
+    .replace("<!-- lean-plan:v1 -->", "<!-- lean-plan-draft:v1 -->")
+    .replace("- Status: approved", "- Status: draft")
+    .replace(
+      "- Execution: first unchecked task only; one task per Ralph iteration",
+      "- Execution: not approved; resume this draft before starting Ralph",
+    )
+    .replace("## Checklist contract", "## Proposed checklist contract")
+    .replace("## Tasks", "## Proposed tasks")
+    .replace("## Final verification", "## Proposed final verification");
 }
 
 function escapeHtml(value) {
@@ -658,6 +672,24 @@ ${requestedChanges}
 
 Do not implement. Update the structured plan, then call lean_finalize_plan
 again so the user can review the revised draft.`;
+}
+
+export function renderResumeRequest(plan, sourcePath) {
+  validatePlan(plan);
+  const source = requireText(sourcePath, "source path");
+  return `[LEAN PLAN RESUME]
+
+A saved structured plan was loaded from ${source}. Treat it as a draft: do not
+implement it and do not assume it is still approved or current.
+
+Review it against the project as needed. Preserve unaffected tasks when the user
+requests changes. When the user is satisfied, call lean_finalize_plan with the
+complete revised plan for approval. If the user asks to defer it again, call
+lean_save_plan instead.
+
+Saved draft:
+
+${renderDraftMarkdown(plan)}`;
 }
 
 export function assertPathInside(parent, candidate) {

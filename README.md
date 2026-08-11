@@ -31,7 +31,7 @@ Version 2.0.0 of pi-ralph-loop declares Node.js 22.22.1 or newer. Check with
 Then install Lean Plan:
 
 ```sh
-pi install git:github.com/lsanpablo/pi-lean-plan@v1.0.0
+pi install git:github.com/lsanpablo/pi-lean-plan@v1.3.0
 ```
 
 For a project-local installation, add `-l` to either command. Restart Pi or run
@@ -61,8 +61,48 @@ If you reject a draft, Lean Plan asks whether you want to:
 - **Continue in chat** — return to the conversation without letting the model
   guess why the draft was rejected.
 
-You can repeat refinement and review as many times as needed. Nothing is written
-until you approve a draft.
+You can repeat refinement and review as many times as needed. No runnable Ralph
+package is written until you approve a draft.
+
+## Save and resume a draft
+
+While read-only planning is active, ask the model to save or defer the plan. The
+model can call the narrowly scoped `lean_save_plan` tool even though normal file
+writes remain disabled. You can also reject the approval preview and choose
+**Save draft and exit**.
+
+The extension writes a readable draft and its structured state under:
+
+```text
+.pi/lean-drafts/<plan-name>/DRAFT.md
+.pi/lean-drafts/<plan-name>/.lean-plan.json
+```
+
+If the model has already submitted a structured plan for review, this command
+saves that most recent version without another model turn:
+
+```text
+/lean-plan-save
+```
+
+In a new Pi session, resume the newest draft:
+
+```text
+/lean-plan-resume
+```
+
+Or name a draft, its `DRAFT.md`, or an already approved plan that you want to
+revise into a new plan:
+
+```text
+/lean-plan-resume .pi/lean-drafts/add-retry-handling
+/lean-plan-resume .pi/lean-drafts/add-retry-handling/DRAFT.md
+/lean-plan-resume .pi/lean-plans/add-retry-handling/PLAN.md
+```
+
+Resume restores the complete structured task details and re-enters read-only
+planning. Saving never creates `RALPH.md`; approving the resumed plan writes a
+new runnable package without modifying the saved draft or the older plan.
 
 ## Visual plan
 
@@ -138,6 +178,8 @@ or unresolved P0/P1 question rejects completion and continues the loop.
 
 - `/lean-plan <request>` — enter read-only planning
 - `/lean-plan-exit` — leave planning without creating files
+- `/lean-plan-save` — persist the most recently submitted structured draft
+- `/lean-plan-resume [draft, DRAFT.md, or PLAN.md]` — resume in read-only mode
 - `/lean-plan-view [task folder or PLAN.md]` — generate or refresh `PLAN.html`
 - `/lean-run [task folder]` — hand an approved plan to pi-ralph-loop
 
