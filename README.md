@@ -101,8 +101,17 @@ revise into a new plan:
 ```
 
 Resume restores the complete structured task details and re-enters read-only
-planning. Saving never creates `RALPH.md`; approving the resumed plan writes a
-new runnable package without modifying the saved draft or the older plan.
+planning. Saving refinements to a resumed `DRAFT.md` updates that Markdown and
+its `.lean-plan.json` in place. Resuming an approved `PLAN.md` keeps the approved
+package immutable and saves later refinements as a new draft. Saving never
+creates `RALPH.md`; approval always writes a new runnable package.
+
+External planners can create the same two-file draft contract. For example, the
+global Codex skill `$create-lean-plan-draft` writes a broad plan under
+`.pi/lean-drafts/`; Pi can then inspect the repository, replace its unknown
+files and `false # TODO(lean-plan)` verification placeholders, and save the
+refined draft in place. Lean Plan refuses to approve a draft while any of those
+fail-closed verification placeholders remain.
 
 ## Visual plan
 

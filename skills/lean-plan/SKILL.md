@@ -42,8 +42,11 @@ pi-ralph-loop v2 `RALPH.md`. It does not implement a loop or start one.
 
 `lean_save_plan` writes a non-runnable `DRAFT.md` plus structured state under
 `.pi/lean-drafts/`. In a later session, `/lean-plan-resume [path]` restores the
-complete task details and returns to read-only planning. Do not recreate a saved
-plan from memory when the resume command can load it.
+complete task details and returns to read-only planning. Saving a resumed
+`DRAFT.md` updates it in place; saving after resuming an approved `PLAN.md`
+creates a new draft. Replace every `false # TODO(lean-plan)` verification
+placeholder before approval. Do not recreate a saved plan from memory when the
+resume command can load it.
 
 After approval, `/lean-plan-view [task folder or PLAN.md]` can deterministically
 render the plan as a self-contained Tailwind HTML visualization. Use the command

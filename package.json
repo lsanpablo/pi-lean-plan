@@ -1,6 +1,6 @@
 {
   "name": "pi-lean-plan",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Deterministic read-only planning and checklist generation for pi-ralph-loop.",
   "type": "module",
   "license": "MIT",

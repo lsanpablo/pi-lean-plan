@@ -130,7 +130,26 @@ test("saves and resumes a draft without granting normal write tools", async () =
     "lean_save_plan",
   ]);
 
-  await harness.commands.get("lean-plan-exit").handler("", ctx);
+  const revised = sampleInput();
+  revised.tasks[0].instructions =
+    "Implement durable widget storage with restart coverage.";
+  revised.tasks[0].files = ["src/widgets.js", "tests/restart.test.js"];
+  const updated = await harness.tools
+    .get("lean_save_plan")
+    .execute("tool-call-2", revised, undefined, undefined, ctx);
+  assert.equal(updated.details.updated, true);
+  assert.equal(
+    (await fs.readdir(path.join(root, ".pi", "lean-drafts"))).length,
+    1,
+  );
+  const revisedDraft = await fs.readFile(
+    path.join(draftDirectory, "DRAFT.md"),
+    "utf8",
+  );
+  assert.match(revisedDraft, /restart coverage/);
+  assert.match(revisedDraft, /tests\/restart\.test\.js/);
+
+  await harness.hooks.get("agent_end")({}, ctx);
   assert.deepEqual(harness.activeTools(), ["read", "write", "bash"]);
   await fs.rm(root, { recursive: true, force: true });
 });

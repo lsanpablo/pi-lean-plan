@@ -23,6 +23,7 @@ import {
   renderResumeRequest,
   renderRalphMarkdown,
   validatePlan,
+  validatePlanForApproval,
 } from "./core.js";
 
 const PLAN_TOOLS = [
@@ -120,6 +121,17 @@ async function writeDraftPackage(cwd, plan) {
     throw error;
   }
   return draftDirectory;
+}
+
+async function updateDraftPackage(draftDirectory, plan) {
+  await writeAtomic(
+    path.join(draftDirectory, PLAN_STATE_FILE),
+    `${JSON.stringify(plan, null, 2)}\n`,
+  );
+  await writeAtomic(
+    path.join(draftDirectory, DRAFT_FILE),
+    renderDraftMarkdown(plan),
+  );
 }
 
 function displayPath(cwd, target) {
@@ -229,7 +241,12 @@ async function resolveStoredPlan(cwd, requestedPath) {
     await fs.access(approvedPath, fsConstants.R_OK);
     sourcePath = approvedPath;
   }
-  return { directory: candidate, plan, sourcePath };
+  return {
+    directory: candidate,
+    plan,
+    sourcePath,
+    editable: path.basename(sourcePath) === DRAFT_FILE,
+  };
 }
 
 export default function leanPlanExtension(pi) {
@@ -237,12 +254,14 @@ export default function leanPlanExtension(pi) {
   let planFinalized = false;
   let savedTools = null;
   let currentDraft = null;
+  let resumeTarget = null;
 
-  const startPlanning = (ctx, draft = null) => {
+  const startPlanning = (ctx, draft = null, target = null) => {
     savedTools = pi.getActiveTools();
     planning = true;
     planFinalized = false;
     currentDraft = draft;
+    resumeTarget = target;
     pi.setActiveTools(PLAN_TOOLS);
     ctx.ui.setStatus("lean-plan", ctx.ui.theme.fg("warning", "read-only planning"));
   };
@@ -253,20 +272,34 @@ export default function leanPlanExtension(pi) {
     planning = false;
     planFinalized = false;
     currentDraft = null;
+    resumeTarget = null;
     if (ctx.hasUI) ctx.ui.setStatus("lean-plan", undefined);
   };
 
   const saveDraft = async (ctx, plan) => {
-    const draftDirectory = await writeDraftPackage(ctx.cwd, plan);
+    let draftDirectory;
+    let updated = false;
+    if (resumeTarget?.editable) {
+      draftDirectory = resumeTarget.directory;
+      assertPathInside(ctx.cwd, draftDirectory);
+      await updateDraftPackage(draftDirectory, plan);
+      updated = true;
+    } else {
+      draftDirectory = await writeDraftPackage(ctx.cwd, plan);
+    }
+    currentDraft = plan;
     planFinalized = true;
-    return displayPath(ctx.cwd, draftDirectory).replaceAll(path.sep, "/");
+    return {
+      relativeDirectory: displayPath(ctx.cwd, draftDirectory).replaceAll(path.sep, "/"),
+      updated,
+    };
   };
 
   pi.registerTool({
     name: "lean_save_plan",
     label: "Save Lean plan draft",
     description:
-      "Save a structured plan as resumable Markdown without approving it or creating a Ralph task. Call only when the user explicitly asks to save or defer the plan.",
+      "Save a structured plan as resumable Markdown without approving it or creating a Ralph task. When a DRAFT.md was resumed, update that draft in place; otherwise create a new draft. Call only when the user explicitly asks to save or defer the plan.",
     parameters: planParameters(),
     async execute(_toolCallId, input, _signal, _onUpdate, ctx) {
       if (!planning || planFinalized) {
@@ -274,21 +307,23 @@ export default function leanPlanExtension(pi) {
       }
       const plan = normalizePlan(input);
       currentDraft = plan;
-      const relativeDirectory = await saveDraft(ctx, plan);
+      const saved = await saveDraft(ctx, plan);
+      const action = saved.updated ? "updated" : "written";
       return {
         content: [
           {
             type: "text",
             text:
-              `Draft written to ${relativeDirectory}/${DRAFT_FILE}. ` +
+              `Draft ${action} at ${saved.relativeDirectory}/${DRAFT_FILE}. ` +
               `Do not implement it. Tell the user they can open a new session and run ` +
-              `/lean-plan-resume ${relativeDirectory}.`,
+              `/lean-plan-resume ${saved.relativeDirectory}.`,
           },
         ],
         details: {
           saved: true,
+          updated: saved.updated,
           approved: false,
-          draftDirectory: relativeDirectory,
+          draftDirectory: saved.relativeDirectory,
         },
       };
     },
@@ -310,6 +345,7 @@ export default function leanPlanExtension(pi) {
 
       const plan = normalizePlan(input);
       currentDraft = plan;
+      validatePlanForApproval(plan);
       const approved = await ctx.ui.confirm(
         `Approve ${plan.tasks.length}-task Lean plan?`,
         renderApprovalPreview(plan),
@@ -341,21 +377,23 @@ export default function leanPlanExtension(pi) {
           }
         }
         if (nextAction === SAVE_DRAFT) {
-          const relativeDirectory = await saveDraft(ctx, plan);
+          const saved = await saveDraft(ctx, plan);
+          const action = saved.updated ? "updated" : "written";
           return {
             content: [
               {
                 type: "text",
                 text:
-                  `Unapproved draft written to ${relativeDirectory}/${DRAFT_FILE}. ` +
+                  `Unapproved draft ${action} at ${saved.relativeDirectory}/${DRAFT_FILE}. ` +
                   `Do not implement it. Tell the user they can open a new session and run ` +
-                  `/lean-plan-resume ${relativeDirectory}.`,
+                  `/lean-plan-resume ${saved.relativeDirectory}.`,
               },
             ],
             details: {
               approved: false,
               action: "save",
-              draftDirectory: relativeDirectory,
+              updated: saved.updated,
+              draftDirectory: saved.relativeDirectory,
             },
           };
         }
@@ -453,7 +491,7 @@ export default function leanPlanExtension(pi) {
   });
 
   pi.registerCommand("lean-plan-save", {
-    description: "Save the most recently submitted Lean plan as a resumable draft",
+    description: "Save or update the most recently submitted resumable draft",
     handler: async (_args, ctx) => {
       if (!planning) {
         ctx.ui.notify("Lean planning mode is not active.", "info");
@@ -471,10 +509,11 @@ export default function leanPlanExtension(pi) {
         return;
       }
       try {
-        const relativeDirectory = await saveDraft(ctx, currentDraft);
+        const saved = await saveDraft(ctx, currentDraft);
+        const action = saved.updated ? "updated" : "written";
         restoreTools(ctx);
         ctx.ui.notify(
-          `Draft written to ${relativeDirectory}/${DRAFT_FILE}. Resume with /lean-plan-resume ${relativeDirectory}`,
+          `Draft ${action} at ${saved.relativeDirectory}/${DRAFT_FILE}. Resume with /lean-plan-resume ${saved.relativeDirectory}`,
           "info",
         );
       } catch (error) {
@@ -493,9 +532,9 @@ export default function leanPlanExtension(pi) {
       try {
         const stored = await resolveStoredPlan(ctx.cwd, args);
         const source = displayPath(ctx.cwd, stored.sourcePath).replaceAll(path.sep, "/");
-        startPlanning(ctx, stored.plan);
+        startPlanning(ctx, stored.plan, stored);
         ctx.ui.notify(`Read-only planning resumed from ${source}.`, "info");
-        pi.sendUserMessage(renderResumeRequest(stored.plan, source));
+        pi.sendUserMessage(renderResumeRequest(stored.plan, source, stored.editable));
       } catch (error) {
         if (planning) restoreTools(ctx);
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
@@ -587,11 +626,13 @@ Ask the user directly about decisions that change scope or architecture. Prefer
 3–8 tasks. When no blocking questions remain, call lean_finalize_plan exactly
 once unless the user explicitly asks to save or defer the plan. In that case,
 call lean_save_plan exactly once instead. Saving writes resumable Markdown but
-does not approve the plan or create a Ralph task. Finalizing creates PLAN.md and
-a native RALPH.md with acceptance commands and a required completion gate. If
-the user rejects a draft, follow the finalizer's returned refinement instructions
-exactly. If it says to wait, do not guess or independently regenerate the plan.
-After saving or finalizing, do not implement.`,
+does not approve the plan or create a Ralph task. A resumed DRAFT.md is updated
+in place. A \`false # TODO(lean-plan)\` verification command is unresolved and
+must be replaced before finalization. Finalizing creates PLAN.md and a native
+RALPH.md with acceptance commands and a required completion gate. If the user
+rejects a draft, follow the finalizer's returned refinement instructions exactly.
+If it says to wait, do not guess or independently regenerate the plan. After
+saving or finalizing, do not implement.`,
       },
     };
   });

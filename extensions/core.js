@@ -117,6 +117,22 @@ export function validatePlan(plan) {
   return plan;
 }
 
+export function validatePlanForApproval(plan) {
+  validatePlan(plan);
+  const unresolved = plan.tasks
+    .filter((task) => /TODO\(lean-plan\)/i.test(task.verification))
+    .map((task) => task.id);
+  if (/TODO\(lean-plan\)/i.test(plan.finalVerification)) {
+    unresolved.push("final verification");
+  }
+  if (unresolved.length > 0) {
+    throw new Error(
+      `Plan has unresolved verification placeholders: ${unresolved.join(", ")}`,
+    );
+  }
+  return plan;
+}
+
 function shellFence(command) {
   return `\`\`\`sh\n${command}\n\`\`\``;
 }
@@ -674,9 +690,12 @@ Do not implement. Update the structured plan, then call lean_finalize_plan
 again so the user can review the revised draft.`;
 }
 
-export function renderResumeRequest(plan, sourcePath) {
+export function renderResumeRequest(plan, sourcePath, editable = false) {
   validatePlan(plan);
   const source = requireText(sourcePath, "source path");
+  const persistence = editable
+    ? "When the user asks to save refinements, lean_save_plan updates this DRAFT.md and its structured state in place."
+    : "When the user asks to save refinements, lean_save_plan creates a new editable draft and leaves this source unchanged.";
   return `[LEAN PLAN RESUME]
 
 A saved structured plan was loaded from ${source}. Treat it as a draft: do not
@@ -686,6 +705,12 @@ Review it against the project as needed. Preserve unaffected tasks when the user
 requests changes. When the user is satisfied, call lean_finalize_plan with the
 complete revised plan for approval. If the user asks to defer it again, call
 lean_save_plan instead.
+
+${persistence}
+
+Any \`false # TODO(lean-plan)\` verification command is an unresolved,
+fail-closed placeholder. Replace every placeholder with a real non-interactive
+command before calling lean_finalize_plan.
 
 Saved draft:
 

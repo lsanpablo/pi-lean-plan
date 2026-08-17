@@ -16,6 +16,7 @@ import {
   renderResumeRequest,
   renderRalphMarkdown,
   slugify,
+  validatePlanForApproval,
 } from "../extensions/core.js";
 
 function samplePlan() {
@@ -73,6 +74,18 @@ test("rejects publish commands disguised as verification", () => {
         final_verification: "true",
       }),
     /may not contain npm publish/,
+  );
+});
+
+test("rejects fail-closed placeholders at approval time", () => {
+  const plan = samplePlan();
+  plan.tasks[0].verification =
+    "false # TODO(lean-plan): replace with a real task verification command";
+  plan.finalVerification =
+    "false # TODO(lean-plan): replace with a real final verification command";
+  assert.throws(
+    () => validatePlanForApproval(plan),
+    /T001, final verification/,
   );
 });
 
@@ -157,12 +170,15 @@ test("renders a complete low-context resume request", () => {
   const request = renderResumeRequest(
     samplePlan(),
     ".pi/lean-drafts/add-guarded-widget-sync/DRAFT.md",
+    true,
   );
   assert.match(request, /\[LEAN PLAN RESUME\]/);
   assert.match(request, /\.pi\/lean-drafts\/add-guarded-widget-sync\/DRAFT\.md/);
   assert.match(request, /Implement the helper and focused tests/);
   assert.match(request, /lean_finalize_plan/);
   assert.match(request, /lean_save_plan/);
+  assert.match(request, /updates this DRAFT\.md.*in place/);
+  assert.match(request, /false # TODO\(lean-plan\)/);
   assert.match(request, /do not\nimplement it/);
 });
 
