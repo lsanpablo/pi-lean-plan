@@ -1,12 +1,12 @@
 ---
 name: lean-plan
-description: Create an approved, sequential implementation plan for @lnilluv/pi-ralph-loop by exploring a project read-only and submitting standalone tasks with executable verification commands. Use when the user invokes /lean-plan, wants a deterministic PLAN.md and native RALPH.md, or needs a low-context planning workflow before starting a Ralph loop.
+description: Create an approved, sequential implementation plan for lean pi-ralph-loop orchestration by exploring a project read-only and submitting standalone tasks with executable verification commands. Use when the user invokes /lean-plan, wants a deterministic PLAN.md and native RALPH.md, or needs a low-context planning workflow before starting a Ralph loop.
 ---
 
 # Create a Lean Plan
 
 Explore the project without editing it. Produce a compact sequential plan that
-`@lnilluv/pi-ralph-loop` can execute one task per fresh iteration.
+the lean pi-ralph-loop can execute one task per fresh worker/validator iteration.
 
 ## Plan
 
@@ -35,10 +35,12 @@ Explore the project without editing it. Produce a compact sequential plan that
 - Avoid “finish the feature,” “fix anything remaining,” and manual verification.
 - Do not ask an iteration to coordinate agents, edit `RALPH.md`, or choose an
   unresolved design.
+- The runner owns task selection, approved verification, independent validation,
+  and PLAN.md checkbox updates. Do not put those coordination steps in task text.
 
 The finalizer assigns stable task IDs, asks for human approval, and writes
 `PLAN.md`, `OPEN_QUESTIONS.md`, acceptance scripts, and a native
-pi-ralph-loop v2 `RALPH.md`. It does not implement a loop or start one.
+lean pi-ralph-loop `RALPH.md`. It does not implement a loop or start one.
 
 `lean_save_plan` writes a non-runnable `DRAFT.md` plus structured state under
 `.pi/lean-drafts/`. In a later session, `/lean-plan-resume [path]` restores the
