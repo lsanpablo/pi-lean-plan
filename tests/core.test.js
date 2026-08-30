@@ -182,7 +182,7 @@ test("renders a complete low-context resume request", () => {
   assert.match(request, /do not\nimplement it/);
 });
 
-test("renders native pi-ralph-loop v2 configuration", () => {
+test("renders lean pi-ralph-loop orchestration configuration", () => {
   const markdown = renderRalphMarkdown(
     samplePlan(),
     ".pi/lean-plans/add-guarded-widget-sync",
@@ -194,8 +194,12 @@ test("renders native pi-ralph-loop v2 configuration", () => {
   assert.match(markdown, /completion_promise: 'LEAN_PLAN_COMPLETE'/);
   assert.match(markdown, /completion_gate: required/);
   assert.match(markdown, /stop_on_error: false/);
+  assert.match(markdown, /orchestration:\n  mode: lean/);
+  assert.match(markdown, /max_validation_failures: 4/);
   assert.match(markdown, /policy:secret-bearing-paths/);
-  assert.doesNotMatch(markdown, /spawn|child process|custom loop/i);
+  assert.match(markdown, /protected_files:[\s\S]*'PLAN\.md'/);
+  assert.match(markdown, /fresh read-only validator/);
+  assert.doesNotMatch(markdown, /custom loop/i);
 });
 
 test("check-plan gate fails until tasks are checked in order", async () => {

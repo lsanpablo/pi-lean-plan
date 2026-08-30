@@ -165,7 +165,7 @@ ${shellFence(task.verification)}
 
 - Status: approved
 - Created: ${plan.createdAt}
-- Execution: first unchecked task only; one task per Ralph iteration
+- Execution: first unchecked task only; parent-verified one task per Ralph iteration
 
 ## Objective
 
@@ -173,13 +173,13 @@ ${plan.objective}
 
 ## Checklist contract
 
-1. Work only on the first unchecked task.
-2. Inspect the project before editing.
-3. Run that task's verification command after implementation.
-4. If verification fails, leave the task unchecked.
-5. If verification succeeds, change only its checkbox to \`[x]\` and replace
-   \`Verification evidence: _pending_\` with a concise result.
-6. Do not start a later task in the same iteration.
+1. The runner selects only the first unchecked task.
+2. A fresh worker inspects the project and implements only that task.
+3. The runner executes the task's approved verification command.
+4. A fresh read-only validator reviews normal, edge, failure, and integration cases.
+5. Only the runner may check the task and replace \`Verification evidence: _pending_\`.
+6. Failed verification or validation leaves the task unchecked for the next worker.
+7. No iteration starts a later task.
 
 ## Tasks
 
@@ -196,7 +196,7 @@ export function renderDraftMarkdown(plan) {
     .replace("<!-- lean-plan:v1 -->", "<!-- lean-plan-draft:v1 -->")
     .replace("- Status: approved", "- Status: draft")
     .replace(
-      "- Execution: first unchecked task only; one task per Ralph iteration",
+      "- Execution: first unchecked task only; parent-verified one task per Ralph iteration",
       "- Execution: not approved; resume this draft before starting Ralph",
     )
     .replace("## Checklist contract", "## Proposed checklist contract")
@@ -508,6 +508,11 @@ required_outputs:
   - ${yamlQuote(PLAN_FILE)}
   - ${yamlQuote(QUESTIONS_FILE)}
 stop_on_error: false
+orchestration:
+  mode: lean
+  state_file: ${yamlQuote(PLAN_STATE_FILE)}
+  checklist_file: ${yamlQuote(PLAN_FILE)}
+  max_validation_failures: 4
 guardrails:
   block_commands:
     - ${yamlQuote("git\\s+push")}
@@ -515,6 +520,7 @@ guardrails:
     - ${yamlQuote("rm\\s+-rf\\s+/(?:\\s|$)")}
   protected_files:
     - ${yamlQuote("policy:secret-bearing-paths")}
+    - ${yamlQuote(PLAN_FILE)}
     - ${yamlQuote(RALPH_FILE)}
     - ${yamlQuote(PLAN_STATE_FILE)}
     - ${yamlQuote(PLAN_CHECK_FILE)}
@@ -523,8 +529,8 @@ guardrails:
 
 # Execute the approved plan
 
-You are running inside \`@lnilluv/pi-ralph-loop\`. Each iteration has fresh
-context. The approved plan and its checkboxes are durable state.
+You are running inside the lean orchestration mode of \`pi-ralph-loop\`. The
+runner, not the model, owns task selection, validation, and checklist state.
 
 ## Objective
 
@@ -543,22 +549,17 @@ Final verification:
 These command results were collected before this iteration. Ralph reruns both
 commands after the completion promise because they are acceptance commands.
 
-## Iteration procedure
+## Iteration contract
 
-1. Read \`${planPath}\`.
-2. Select only the first unchecked task.
-3. Inspect the relevant project files and existing conventions.
-4. Implement that task completely.
-5. Run the task-specific verification command from \`PLAN.md\`.
-6. Check off the task and record evidence only if that command succeeds.
-7. Stop the iteration without beginning another task.
+The runner reads \`${planPath}\` and \`${PLAN_STATE_FILE}\`, gives one exact task
+to a fresh implementation worker, runs that task's approved verification, and
+then gives the evidence to a fresh read-only validator. Only the runner checks
+off a task, and only after both gates pass.
 
-If implementation exposes a blocking product or architecture decision, record it
-under a P0 or P1 heading in \`${questionsPath}\`, leave the task unchecked, and
-explain the blocker. Mark resolved questions as checked items or remove them.
-
-Do not edit \`${RALPH_FILE}\`, \`${PLAN_STATE_FILE}\`, \`${PLAN_CHECK_FILE}\`, or
-\`${FINAL_CHECK_FILE}\`. Do not push or publish.
+Workers and validators must not edit \`${PLAN_FILE}\`, \`${RALPH_FILE}\`,
+\`${PLAN_STATE_FILE}\`, \`${PLAN_CHECK_FILE}\`, \`${FINAL_CHECK_FILE}\`, or
+\`${questionsPath}\`. They must not push or publish. A blocking product decision
+is reported in the iteration summary and leaves the task unchecked.
 
 ## Completion
 

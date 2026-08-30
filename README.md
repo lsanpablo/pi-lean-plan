@@ -170,18 +170,23 @@ Use pi-ralph-loop's own commands to operate the run:
 
 ## Deterministic completion
 
-The generated `RALPH.md` uses pi-ralph-loop v2's native controls:
+The generated `RALPH.md` uses the lean pi-ralph-loop controls:
 
 - `items_per_iteration: 1`
+- `orchestration.mode: lean`, which runs a fresh worker and validator serially
 - `stop_on_error: false`, so incomplete checks provide evidence for the next pass
 - a required `LEAN_PLAN_COMPLETE` completion promise
 - required `PLAN.md` and `OPEN_QUESTIONS.md` outputs
 - acceptance checks for all task checkboxes and the approved final command
-- guardrails that protect secret-bearing paths and generated control files
+- guardrails that protect secret-bearing paths and all generated control files,
+  including `PLAN.md`
 
-The loop may emit its promise only after all tasks are checked. Ralph then reruns
-both acceptance commands; a remaining task, failed final command, missing output,
-or unresolved P0/P1 question rejects completion and continues the loop.
+The model never edits checkboxes. The parent runs each approved task command,
+passes the result to a fresh read-only validator, and checks off the task only
+after both pass. Repeated or alternating validator feedback stops with a bounded
+report instead of looping indefinitely. Once every task is checked, Ralph reruns
+both acceptance commands; a failed final command, missing output, or unresolved
+P0/P1 question rejects completion and continues the loop.
 
 ## Commands
 
